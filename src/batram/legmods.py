@@ -1,5 +1,6 @@
 import logging
 import math
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import NamedTuple, cast
@@ -758,7 +759,11 @@ class SimpleTM(torch.nn.Module):
                 chol[i, :, :], cStar.unsqueeze(1), upper=False
             ).squeeze()
             meanPred = y_tilde[i, :].mul(cChol).sum()
+
             varPredNoNug = prVar - cChol.square().sum()
+            if varPredNoNug < 0.0:
+                warnings.warn("Negative v(y_1:i-1) clipped to zero.")
+                varPredNoNug = torch.clip(varPredNoNug, 0.0)
 
             # score
             initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
