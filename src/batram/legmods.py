@@ -5,7 +5,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import NamedTuple, cast
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+import tensorflow_probability.substrates.jax.distributions as tfd
 import torch
 from gpytorch.kernels import MaternKernel
 from matplotlib import pyplot as plt
@@ -916,6 +919,110 @@ class SimpleTM(torch.nn.Module):
             param_chain=param_chain,
             tracked_chain=tracked_chain,
         )
+
+    def compute_z_and_logdet(self, obs, x_fix=torch.tensor([]), last_ind=None):
+        if isinstance(last_ind, int) and last_ind < x_fix.size(-1):
+            raise ValueError("last_ind must be larger than conditioned field x_fix.")
+
+        augmented_data: AugmentedData = self.augment_data(self.data, None)
+
+        data = self.data.response
+        NN = self.data.conditioning_sets
+        # response = augmented_data.response
+        # response_neighbor_values = augmented_data.response_neighbor_values
+        theta = torch.tensor(
+            [
+                *self.nugget.nugget_params.detach(),
+                self.kernel.theta_q.detach(),
+                *self.kernel.sigma_params.detach(),
+                self.kernel.lengthscale.detach(),
+            ]
+        )
+        scales = augmented_data.scales
+        sigmas = self.kernel._sigmas(scales)
+        self.intloglik.nug_mult
+        # nugMult = self.intloglik.nugMult  # not used
+        smooth = self.kernel.smooth
+
+        nug_mean = self.nugget(augmented_data)
+        kernel_result = self.kernel.forward(augmented_data, nug_mean)
+        nugget_mean = kernel_result.nug_mean
+        chol = kernel_result.GChol
+        tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
+        y_tilde = tmp_res.y_tilde
+        beta_post = tmp_res.beta_post
+        alpha_post = tmp_res.alpha_post
+        n, N = data.shape
+        m = NN.shape[1]
+        if last_ind is None:
+            last_ind = N
+
+        # loop over variables/locations
+        z = torch.zeros(N)
+        z_logdet = torch.zeros(N)
+
+        normalDist = tfd.Normal(loc=0.0, scale=1.0)
+
+        for i in range(x_fix.size(0), last_ind):
+            # predictive distribution for current sample
+            if i == 0:
+                cStar = torch.zeros(n)
+                prVar = torch.tensor(0.0)
+            else:
+                ncol = min(i, m)
+                X = data[:, NN[i, :ncol]]
+                XPred = obs[NN[i, :ncol]].unsqueeze(
+                    0
+                )  # this line is different than in cond_sampl
+                cStar = kernel_fun(
+                    XPred, theta, sigmas[i], smooth, nugget_mean[i], X
+                ).squeeze()
+                prVar = kernel_fun(
+                    XPred, theta, sigmas[i], smooth, nugget_mean[i]
+                ).squeeze()
+            cChol = torch.linalg.solve_triangular(
+                chol[i, :, :], cStar.unsqueeze(1), upper=False
+            ).squeeze()
+            meanPred = y_tilde[i, :].mul(cChol).sum()
+
+            varPredNoNug = prVar - cChol.square().sum()
+            if varPredNoNug < 0.0:
+                warnings.warn("Negative v(y_1:i-1) clipped to zero.")
+                varPredNoNug = torch.clip(varPredNoNug, 0.0)
+
+            # score
+            initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
+
+            z_tilde = (obs[i] - meanPred) / initVar.sqrt()
+
+            with torch.no_grad():
+                # This is a hacky implementation in JAX, because pytorch does not
+                # offer an implementation of StudentT.cdf.
+                # As a result, I do a lot of type conversions here, which is not very 
+                # nice.
+
+                z_tilde_jax = jnp.asarray(z_tilde)
+
+                def z_helper(z_tilde):
+                    STDist = tfd.StudentT(
+                        df=2 * jnp.asarray(alpha_post[i]), loc=0.0, scale=1.0
+                    )
+                    return normalDist.quantile(STDist.cdf(z_tilde))
+
+                z_helper_grad = jax.grad(z_helper)
+
+            z[i] = torch.tensor(np.asarray(z_helper(z_tilde_jax)))
+
+            z_logdet[i] = (
+                -0.5 * initVar.log()
+                + torch.tensor(np.asarray(z_helper_grad(z_tilde_jax))).log()
+            )
+
+        return z, z_logdet
+
+    def log_score_z(self, z, z_logdet):
+        normalDist = Normal(loc=0.0, scale=1.0)
+        return (normalDist.log_prob(z) + z_logdet).sum()
 
 
 @dataclass
