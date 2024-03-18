@@ -5,15 +5,13 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import NamedTuple, cast
 
-import jax
-import jax.numpy as jnp
 import numpy as np
-import tensorflow_probability.substrates.jax.distributions as tfd
 import torch
 from gpytorch.kernels import MaternKernel
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes as MPLAxes
 from pyro.distributions import InverseGamma
+from scipy import stats
 from torch.distributions import Normal
 from torch.distributions.studentT import StudentT
 from tqdm import tqdm
@@ -958,10 +956,8 @@ class SimpleTM(torch.nn.Module):
             last_ind = N
 
         # loop over variables/locations
-        z = torch.zeros(N)
-        z_logdet = torch.zeros(N)
-
-        normalDist = tfd.Normal(loc=0.0, scale=1.0)
+        z = np.zeros(N)
+        z_logdet = np.zeros(N)
 
         for i in range(x_fix.size(0), last_ind):
             # predictive distribution for current sample
@@ -995,34 +991,23 @@ class SimpleTM(torch.nn.Module):
 
             z_tilde = (obs[i] - meanPred) / initVar.sqrt()
 
-            with torch.no_grad():
-                # This is a hacky implementation in JAX, because pytorch does not
-                # offer an implementation of StudentT.cdf.
-                # As a result, I do a lot of type conversions here, which is not very 
-                # nice.
+            # Using scipy here instead of pytorch, because pytorch does not
+            # implement StudentT.cdf.
+            z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
 
-                z_tilde_jax = jnp.asarray(z_tilde)
-
-                def z_helper(z_tilde):
-                    STDist = tfd.StudentT(
-                        df=2 * jnp.asarray(alpha_post[i]), loc=0.0, scale=1.0
-                    )
-                    return normalDist.quantile(STDist.cdf(z_tilde))
-
-                z_helper_grad = jax.grad(z_helper)
-
-            z[i] = torch.tensor(np.asarray(z_helper(z_tilde_jax)))
+            z[i] = stats.norm.ppf(z_t)
 
             z_logdet[i] = (
                 -0.5 * initVar.log()
-                + torch.tensor(np.asarray(z_helper_grad(z_tilde_jax))).log()
+                + stats.t.logpdf(z_tilde, df=2 * alpha_post[i])
+                - stats.norm.logpdf(z[i])
             )
 
         return z, z_logdet
 
     def log_score_z(self, z, z_logdet):
-        normalDist = Normal(loc=0.0, scale=1.0)
-        return (normalDist.log_prob(z) + z_logdet).sum()
+        """z and z_logdet are assumed to be numpy arrays here."""
+        return (stats.norm.logpdf(z) + z_logdet).sum()
 
 
 @dataclass
