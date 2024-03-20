@@ -1,12 +1,18 @@
 import os
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol
 
 import numpy as np
 import torch
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
+
 from batram.base_functions import TransportMap
+from batram.datautils import Dataset, MinibatchSample
+from batram.stopper import EarlyStopper
 
 # the following two lines refer to Dan's private version of batram,
 # file:///home/danjd/projects/transport_maps/batram-cov
@@ -14,19 +20,16 @@ from batram.base_functions import TransportMap
 # from batram.cholesky import CholeskyDecompositionError
 # from batram.covariate_tm import CovariateTM
 
-from batram.datautils import Dataset, MinibatchSample
-from batram.stopper import EarlyStopper
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from tqdm import tqdm
-
 
 class CholeskyDecompositionError(Exception):
     """Replacement for the out-commented import form Dan's private code."""
+
     pass
 
 
 class LRScheduler(Protocol):
-    def step(self) -> None: ...
+    def step(self) -> None:
+        ...
 
 
 class Runner(ABC):
@@ -191,7 +194,7 @@ class ModelRunner(Runner):
         # commenting the following line, since it depends on code that I do not have.
         # See imports.
         # if isinstance(self.model, CovariateTM):
-            # return -self.model.score(test_data.x, test_data.response).mean().item()
+        # return -self.model.score(test_data.x, test_data.response).mean().item()
         else:
             return -self.model.score(test_data.response).mean().item()
 
