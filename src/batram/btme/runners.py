@@ -256,193 +256,193 @@ class ModelRunner(Runner):
         tracked_loss[epoch:] = np.nan  # type: ignore
         return tracked_loss
 
+# Commented out, because it depends on code that I do not have.
+# class VariationalModelRunner(Runner):
+#     """Model runner for variational models requiring dual optimizers.
 
-class VariationalModelRunner(Runner):
-    """Model runner for variational models requiring dual optimizers.
+#     This runner separates the kernel and variational parameters into separate
+#     optimizers and learning rate schedules.
 
-    This runner separates the kernel and variational parameters into separate
-    optimizers and learning rate schedules.
+#     Attributes:
+#         model (cm.CovariateTM): The model to fit.
+#         kernel_opt (torch.optim.AdamW): The optimizer to use for training the
+#             kernel parameters.
+#         kernel_schedule (torch.optim.lr_scheduler.CosineAnnealingLR): The learning
+#             rate scheduler to use for training the kernel parameters.
+#         var_opt (torch.optim.AdamW): The optimizer to use for training the
+#             variational parameters.
+#         var_schedule (torch.optim.lr_scheduler.CosineAnnealingLR): The learning
+#             rate scheduler to use for training the variational parameters.
+#         stopper (EarlyStopper | None): The early stopping criterion to use for training.
+#         save_path (Path | str | None): The path to save checkpoints to.
+#         save_every (int | None): The number of epochs between checkpoints.
+#     """
 
-    Attributes:
-        model (cm.CovariateTM): The model to fit.
-        kernel_opt (torch.optim.AdamW): The optimizer to use for training the
-            kernel parameters.
-        kernel_schedule (torch.optim.lr_scheduler.CosineAnnealingLR): The learning
-            rate scheduler to use for training the kernel parameters.
-        var_opt (torch.optim.AdamW): The optimizer to use for training the
-            variational parameters.
-        var_schedule (torch.optim.lr_scheduler.CosineAnnealingLR): The learning
-            rate scheduler to use for training the variational parameters.
-        stopper (EarlyStopper | None): The early stopping criterion to use for training.
-        save_path (Path | str | None): The path to save checkpoints to.
-        save_every (int | None): The number of epochs between checkpoints.
-    """
+#     def __init__(
+#         self,
+#         model: CovariateTM,
+#         init_lrs: list[float] = [4e-3, 1e-2],
+#         stopper_patience: int = 1000,
+#         save_path: Path | str | None = None,
+#         save_every: int | None = None,
+#         **kwargs,
+#     ):
+#         """Instantiates the runner class to fit a transport map.
 
-    def __init__(
-        self,
-        model: CovariateTM,
-        init_lrs: list[float] = [4e-3, 1e-2],
-        stopper_patience: int = 1000,
-        save_path: Path | str | None = None,
-        save_every: int | None = None,
-        **kwargs,
-    ):
-        """Instantiates the runner class to fit a transport map.
+#         Arguments:
+#         ----------
+#         model: TransportMap
+#             Any transport map in the batram package.
 
-        Arguments:
-        ----------
-        model: TransportMap
-            Any transport map in the batram package.
+#         init_lrs: list[float]
+#             The initial learning rate to initialize AdamW with for each kernel.
+#             Typically it is better to set the learning rate for the kernel
+#             hyperparameters quite small compared to the variational parameters.
+#             The default values are a good starting point.
 
-        init_lrs: list[float]
-            The initial learning rate to initialize AdamW with for each kernel.
-            Typically it is better to set the learning rate for the kernel
-            hyperparameters quite small compared to the variational parameters.
-            The default values are a good starting point.
+#         stopper_patience: int
+#             The number of epochs to wait before stopping the optimization.
 
-        stopper_patience: int
-            The number of epochs to wait before stopping the optimization.
+#         save_path: Path | str | None
+#             The path to save checkpoints to.
 
-        save_path: Path | str | None
-            The path to save checkpoints to.
+#         save_every: int | None
+#             The number of epochs between checkpoints.
 
-        save_every: int | None
-            The number of epochs between checkpoints.
+#         kwargs:
+#         -------
+#         keyword arguments to pass to the optimizer and learning rate scheduler.
+#         The optimizer is AdamW and the learning rate scheduler is
+#         CosineAnnealingLR from pytorch.
 
-        kwargs:
-        -------
-        keyword arguments to pass to the optimizer and learning rate scheduler.
-        The optimizer is AdamW and the learning rate scheduler is
-        CosineAnnealingLR from pytorch.
+#         AdamW args:
+#         betas: tuple (default (0.9, 0.999))
+#             The betas to use for the AdamW optimizer.
 
-        AdamW args:
-        betas: tuple (default (0.9, 0.999))
-            The betas to use for the AdamW optimizer.
+#         eps: float (default 1e-8)
+#             The epsilon to use for the AdamW optimizer.
 
-        eps: float (default 1e-8)
-            The epsilon to use for the AdamW optimizer.
-
-        weight_decay: float (default 0.0)
-            The weight decay to use for the AdamW optimizer.
+#         weight_decay: float (default 0.0)
+#             The weight decay to use for the AdamW optimizer.
 
 
-        CosineAnnealingLR args.
-        T_max: int (default 1000)
-            The number of steps the learning rate schedule should apply for
+#         CosineAnnealingLR args.
+#         T_max: int (default 1000)
+#             The number of steps the learning rate schedule should apply for
 
-        eta_min: float (default 3e-6)
-            The minimum learning rate to decay to in the learning rate scheduler.
-        """
-        self.model = model
+#         eta_min: float (default 3e-6)
+#             The minimum learning rate to decay to in the learning rate scheduler.
+#         """
+#         self.model = model
 
-        self.kernel_optimizer = torch.optim.AdamW(
-            list(model.log_mean.parameters())
-            + list(model.response_scale.parameters())
-            + list(model.covar_scale.parameters())
-            + list(model.mean_kernel.parameters())
-            + list(model.var_kernel.parameters()),
-            lr=init_lrs[0],
-            betas=kwargs.get("betas", (0.9, 0.999)),
-            eps=kwargs.get("eps", 1e-8),
-            weight_decay=kwargs.get("weight_decay", 0),
-        )
-        self.kernel_scheduler = CosineAnnealingLR(
-            optimizer=self.kernel_optimizer,
-            T_max=kwargs.get("T_max", 1000),
-            eta_min=kwargs.get("eta_min", 3e-6),
-        )
+#         self.kernel_optimizer = torch.optim.AdamW(
+#             list(model.log_mean.parameters())
+#             + list(model.response_scale.parameters())
+#             + list(model.covar_scale.parameters())
+#             + list(model.mean_kernel.parameters())
+#             + list(model.var_kernel.parameters()),
+#             lr=init_lrs[0],
+#             betas=kwargs.get("betas", (0.9, 0.999)),
+#             eps=kwargs.get("eps", 1e-8),
+#             weight_decay=kwargs.get("weight_decay", 0),
+#         )
+#         self.kernel_scheduler = CosineAnnealingLR(
+#             optimizer=self.kernel_optimizer,
+#             T_max=kwargs.get("T_max", 1000),
+#             eta_min=kwargs.get("eta_min", 3e-6),
+#         )
 
-        self.variational_optimizer = torch.optim.AdamW(
-            model.variational_lambdas.parameters(),
-            lr=init_lrs[1],
-            betas=kwargs.get("betas", (0.9, 0.999)),
-            eps=kwargs.get("eps", 1e-8),
-            weight_decay=kwargs.get("weight_decay", 0),
-        )
-        self.variational_scheduler = CosineAnnealingLR(
-            optimizer=self.variational_optimizer,
-            T_max=kwargs.get("T_max", 1000),
-            eta_min=kwargs.get("eta_min", 3e-6),
-        )
+#         self.variational_optimizer = torch.optim.AdamW(
+#             model.variational_lambdas.parameters(),
+#             lr=init_lrs[1],
+#             betas=kwargs.get("betas", (0.9, 0.999)),
+#             eps=kwargs.get("eps", 1e-8),
+#             weight_decay=kwargs.get("weight_decay", 0),
+#         )
+#         self.variational_scheduler = CosineAnnealingLR(
+#             optimizer=self.variational_optimizer,
+#             T_max=kwargs.get("T_max", 1000),
+#             eta_min=kwargs.get("eta_min", 3e-6),
+#         )
 
-        patience = stopper_patience
-        self.stopper = EarlyStopper(patience=patience, min_diff=3e-1)
-        self.save_path = save_path
-        self.save_every = save_every
-        self.data_size = len(model.data)
+#         patience = stopper_patience
+#         self.stopper = EarlyStopper(patience=patience, min_diff=3e-1)
+#         self.save_path = save_path
+#         self.save_every = save_every
+#         self.data_size = len(model.data)
 
-    def score_train_data(self, minibatch: MinibatchSample) -> float:
-        return self.model(minibatch)
+#     def score_train_data(self, minibatch: MinibatchSample) -> float:
+#         return self.model(minibatch)
 
-    @torch.no_grad()
-    def score_test_data(self, test_data: Dataset) -> float:
-        return -self.model.score(test_data.x, test_data.response).mean().item()
+#     @torch.no_grad()
+#     def score_test_data(self, test_data: Dataset) -> float:
+#         return -self.model.score(test_data.x, test_data.response).mean().item()
 
-    def fit_model(
-        self,
-        train_data: Dataset,
-        test_data: Dataset,
-        num_epochs: int,
-        batch_size: int | None = None,
-        model_name: str | None = None,
-    ) -> np.ndarray:
-        """Fits a model to data using test_data for validation."""
+#     def fit_model(
+#         self,
+#         train_data: Dataset,
+#         test_data: Dataset,
+#         num_epochs: int,
+#         batch_size: int | None = None,
+#         model_name: str | None = None,
+#     ) -> np.ndarray:
+#         """Fits a model to data using test_data for validation."""
 
-        tracked_loss = np.zeros((num_epochs, 2))
+#         tracked_loss = np.zeros((num_epochs, 2))
 
-        if batch_size is None:
-            batch_size = len(train_data)
-        normalconst = self.data_size / batch_size
-        sample_size = train_data.response.shape[1]
+#         if batch_size is None:
+#             batch_size = len(train_data)
+#         normalconst = self.data_size / batch_size
+#         sample_size = train_data.response.shape[1]
 
-        device = next(self.model.parameters()).device
+#         device = next(self.model.parameters()).device
 
-        tqdm_range = tqdm(range(num_epochs))
-        for epoch in tqdm_range:
-            batch_indices = self.get_batch_index(batch_size, device=device)
-            for batch in batch_indices:
-                minibatch = train_data[batch]
-                self.kernel_optimizer.zero_grad()
-                self.variational_optimizer.zero_grad()
+#         tqdm_range = tqdm(range(num_epochs))
+#         for epoch in tqdm_range:
+#             batch_indices = self.get_batch_index(batch_size, device=device)
+#             for batch in batch_indices:
+#                 minibatch = train_data[batch]
+#                 self.kernel_optimizer.zero_grad()
+#                 self.variational_optimizer.zero_grad()
 
-                loss = normalconst * self.model(minibatch)
-                loss.backward()
-                self.kernel_optimizer.step()
-                self.variational_optimizer.step()
+#                 loss = normalconst * self.model(minibatch)
+#                 loss.backward()
+#                 self.kernel_optimizer.step()
+#                 self.variational_optimizer.step()
 
-            with torch.no_grad():
-                try:
-                    elbo = self.model(train_data[:]).item() / sample_size
-                    # NLL is averaged over the test set already in score_test_data
-                    nll = self.score_test_data(test_data)
-                    tracked_loss[epoch, 0] = elbo
-                    tracked_loss[epoch, 1] = nll
-                except CholeskyDecompositionError:
-                    msg = "An error halted the fit. Returning best model."
-                    warnings.warn(msg)
-                    tracked_loss[epoch, :] = np.nan
-                    self.model.load_state_dict(self.stopper.best_state)
-                    return tracked_loss
-                except RuntimeError:
-                    msg = "An error halted the fit. Returning best model."
-                    warnings.warn(msg)
-                    tracked_loss[epoch, :] = np.nan
-                    self.model.load_state_dict(self.stopper.best_state)
-                    return tracked_loss
+#             with torch.no_grad():
+#                 try:
+#                     elbo = self.model(train_data[:]).item() / sample_size
+#                     # NLL is averaged over the test set already in score_test_data
+#                     nll = self.score_test_data(test_data)
+#                     tracked_loss[epoch, 0] = elbo
+#                     tracked_loss[epoch, 1] = nll
+#                 except CholeskyDecompositionError:
+#                     msg = "An error halted the fit. Returning best model."
+#                     warnings.warn(msg)
+#                     tracked_loss[epoch, :] = np.nan
+#                     self.model.load_state_dict(self.stopper.best_state)
+#                     return tracked_loss
+#                 except RuntimeError:
+#                     msg = "An error halted the fit. Returning best model."
+#                     warnings.warn(msg)
+#                     tracked_loss[epoch, :] = np.nan
+#                     self.model.load_state_dict(self.stopper.best_state)
+#                     return tracked_loss
 
-            self.kernel_scheduler.step()
-            self.variational_scheduler.step()
+#             self.kernel_scheduler.step()
+#             self.variational_scheduler.step()
 
-            if self.stopper:
-                if self.stopper.step(tracked_loss[epoch, 1], self.model.state_dict()):
-                    self.model.load_state_dict(self.stopper.best_state)
-                    break
+#             if self.stopper:
+#                 if self.stopper.step(tracked_loss[epoch, 1], self.model.state_dict()):
+#                     self.model.load_state_dict(self.stopper.best_state)
+#                     break
 
-            self.save_model(epoch, model_name=model_name)
-            desc = "Epoch {} | Train loss {:.4f} | Test loss {:.4f}".format(
-                epoch, *tracked_loss[epoch]
-            )
-            tqdm_range.set_description(desc)
+#             self.save_model(epoch, model_name=model_name)
+#             desc = "Epoch {} | Train loss {:.4f} | Test loss {:.4f}".format(
+#                 epoch, *tracked_loss[epoch]
+#             )
+#             tqdm_range.set_description(desc)
 
-        tracked_loss[epoch:] = np.nan  # type: ignore
-        return tracked_loss
+#         tracked_loss[epoch:] = np.nan  # type: ignore
+#         return tracked_loss
