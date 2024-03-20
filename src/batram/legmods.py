@@ -835,6 +835,7 @@ class SimpleTM(torch.nn.Module):
             )
 
         losses: list[float] = [self().item()]
+
         test_losses: list[float] = (
             [] if test_data is None else [self(data=test_data).item()]
         )
@@ -994,8 +995,14 @@ class SimpleTM(torch.nn.Module):
             # Using scipy here instead of pytorch, because pytorch does not
             # implement StudentT.cdf.
             z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
-
             z[i] = stats.norm.ppf(z_t)
+
+            if np.isinf(z[i]):
+                warnings.warn(
+                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f}, \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}"
+                    f"\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
+                )
+                z[i] = stats.norm.ppf(1 - 1e-16)
 
             z_logdet[i] = (
                 -0.5 * initVar.log()
@@ -1003,6 +1010,13 @@ class SimpleTM(torch.nn.Module):
                 - stats.norm.logpdf(z[i])
             )
 
+            if np.isinf(z[i]) or np.isinf(z_logdet[i]):
+                warnings.warn(
+                    f"Inf IN CLIPPED VALUES encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f}, \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}"
+                    f"\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
+                )
+
+        return z, z_logdet
 
     def compute_z_and_logdet_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
         z = np.zeros_like(obs)
