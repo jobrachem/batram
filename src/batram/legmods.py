@@ -1003,11 +1003,29 @@ class SimpleTM(torch.nn.Module):
                 - stats.norm.logpdf(z[i])
             )
 
+
+    def compute_z_and_logdet_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
+        z = np.zeros_like(obs)
+        z_logdet = np.zeros_like(obs)
+
+        for i in range(obs.shape[0]):
+            z[i, :], z_logdet[i, :] = self.compute_z_and_logdet(
+                obs[i, :], x_fix, last_ind
+            )
+
         return z, z_logdet
 
-    def log_score_z(self, z, z_logdet):
+    def score_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
+        score = torch.zeros(obs.shape[0])
+
+        for i in range(obs.shape[0]):
+            score[i] = self.score(obs[i, :], x_fix, last_ind)
+
+        return score
+
+    def log_score_z(self, z, z_logdet, dim=None):
         """z and z_logdet are assumed to be numpy arrays here."""
-        return (stats.norm.logpdf(z) + z_logdet).sum()
+        return (stats.norm.logpdf(z) + z_logdet).sum(axis=dim)
 
 
 @dataclass

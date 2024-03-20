@@ -134,8 +134,28 @@ def test_legmods_z_log_score(simple_data: Data) -> None:
         z, z_logdet = tm.compute_z_and_logdet(simple_data.response[0, :])
         score_z = tm.log_score_z(z, z_logdet)
 
-    assert score == pytest.approx(-49.6006, abs=1e-3)
+    assert score_z == pytest.approx(-49.6006, abs=1e-3)
     assert score == pytest.approx(score_z, abs=1e-3)
+
+
+def test_legmods_z_log_score_batched(simple_data: Data) -> None:
+    theta_init = torch.tensor(
+        [simple_data.response[:, 0].square().mean().log(), 0.3, 0.0, 0.0, 0.1, -1.0]
+    )
+
+    tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
+
+    with torch.no_grad():
+        score0 = tm.score(simple_data.response[0, :])
+        score4 = tm.score(simple_data.response[4, :])
+        score13 = tm.score(simple_data.response[13, :])
+
+        z, z_logdet = tm.compute_z_and_logdet_batched(simple_data.response[0:14, :])
+        score_z = tm.log_score_z(z, z_logdet, dim=1)
+
+    assert score0 == pytest.approx(score_z[0], abs=1e-3)
+    assert score4 == pytest.approx(score_z[4], abs=1e-3)
+    assert score13 == pytest.approx(score_z[13], abs=1e-3)
 
 
 def test_legmods_score_with_xfix(simple_data: Data) -> None:
