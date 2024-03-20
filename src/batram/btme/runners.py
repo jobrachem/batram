@@ -2,22 +2,26 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
-from batram.base_functions import TransportMap
 from batram.datautils import Dataset, MinibatchSample
 from batram.stopper import EarlyStopper
 
 # the following two lines refer to Dan's private version of batram,
 # file:///home/danjd/projects/transport_maps/batram-cov
 # I'm commenting them out.
+# from batram.base_functions import TransportMap
 # from batram.cholesky import CholeskyDecompositionError
 # from batram.covariate_tm import CovariateTM
+
+
+# Replacement for the out-commented import form Dan's private code.
+TransportMap = Any
 
 
 class CholeskyDecompositionError(Exception):
@@ -178,7 +182,7 @@ class ModelRunner(Runner):
         )
 
         patience = stopper_patience
-        self.stopper = EarlyStopper(patience=patience, min_diff=3e-1)
+        self.stopper = EarlyStopper(patience=patience, min_diff=3e-1)  # type: ignore
         self.save_path = save_path
         self.save_every = save_every
         self.data_size = len(model.data)
@@ -254,5 +258,3 @@ class ModelRunner(Runner):
 
         tracked_loss[epoch:] = np.nan  # type: ignore
         return tracked_loss
-
-

@@ -181,7 +181,7 @@ class Dataset(data.Dataset):
         else:
             x_repr = None
         return (
-            f"CovariatesData(\n"
+            "CovariatesData(\n"
             f"  locs = {self.locs.shape},\n"
             f"  condsets = {self.condsets.shape},\n"
             f"  response = {self.response.shape},\n"
@@ -189,7 +189,7 @@ class Dataset(data.Dataset):
             f"  scales = {self.scales.shape},\n"
             f"  x = {x_repr},\n"
             f"  max_m = {self.max_m} \n"
-            f")"
+            ")"
         )
 
 

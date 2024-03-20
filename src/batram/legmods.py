@@ -62,7 +62,7 @@ def m_threshold(theta, m_max) -> torch.Tensor:
     if m > m_max:
         logging.warning(
             f"Required size of the conditioning sets m = {m.item()} is greater than "
-            f"the maximum number of neighbors {m_max = } in the pre-calculated "
+            f"the maximum number of neighbors {m_max=} in the pre-calculated "
             "conditioning sets."
         )
         m = torch.tensor(m_max)
@@ -310,7 +310,7 @@ class TransportMapKernel(torch.nn.Module):
         if m > max_m:
             logging.warning(
                 f"Required size of the conditioning sets m = {m.item()} is "
-                f"greater than the maximum number of neighbors {max_m = } in "
+                f"greater than the maximum number of neighbors {max_m=} in "
                 "the pre-calculated conditioning sets."
             )
             m = torch.tensor(max_m)
@@ -999,8 +999,10 @@ class SimpleTM(torch.nn.Module):
 
             if np.isinf(z[i]):
                 warnings.warn(
-                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f}, \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}"
-                    f"\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
+                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f},"
+                    f" \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}\n\t{obs[i]=:.3f},"
+                    f" \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f},"
+                    f" \n\t{2*alpha_post[i]=:.3f}"
                 )
                 z[i] = stats.norm.ppf(1 - 1e-16)
 
@@ -1012,8 +1014,10 @@ class SimpleTM(torch.nn.Module):
 
             if np.isinf(z[i]) or np.isinf(z_logdet[i]):
                 warnings.warn(
-                    f"Inf IN CLIPPED VALUES encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f}, \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}"
-                    f"\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
+                    f"Inf IN CLIPPED VALUES encountered! \n\t{i=}, \n\t{z_tilde=:.3f},"
+                    f" \n\t{z_t=:.3f}, \n\t{z[i]=:.3f},"
+                    f" \n\t{z_logdet[i]=}\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f},"
+                    f" \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
                 )
 
         return z, z_logdet

@@ -39,7 +39,7 @@ class RandomSampling(SamplingStrategy):
     def __init__(self, *distributions: stats.rv_continuous):
         self.distributions = distributions
 
-    def sample(self, n_samples: int):
+    def sample(self, n_samples: int):  # type: ignore
         ndims = len(self.distributions)
         samples = np.empty((ndims, n_samples))
         for i, distribution in enumerate(self.distributions):
@@ -59,7 +59,7 @@ class LatinHypercubeSampling(SamplingStrategy):
     def __call__(self, n_samples):
         return self.sample(n_samples)
 
-    def sample(self, n_samples: int):
+    def sample(self, n_samples: int):  # type: ignore
         if self.input_dims is None:
             intervals = np.linspace(0, 1, n_samples + 1)
         else:
