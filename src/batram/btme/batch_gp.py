@@ -35,7 +35,8 @@ class BatchGP(gpytorch.models.ExactGP):
     def forward(self, x):
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x) # type: ignore
+        dst = gpytorch.distributions.MultivariateNormal(mean_x, covar_x)  # type: ignore
+        return dst
 
 
 def get_model(
