@@ -366,7 +366,7 @@ class TransportMapKernel(torch.nn.Module):
         eyes = torch.eye(k.shape[-1]).expand_as(k)
         g = k + eyes
 
-        g[data.batch_idx == 0] = torch.eye(k.shape[-1])
+        g[data.batch_idx == 0] = torch.eye(k.shape[-1], dtype=g.dtype)
         try:
             g_chol = torch.linalg.cholesky(g)
         except RuntimeError as e:
