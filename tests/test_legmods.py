@@ -138,6 +138,26 @@ def test_legmods_z_log_score(simple_data: Data) -> None:
     assert score == pytest.approx(score_z, abs=1e-3)
 
 
+def test_inverse_map(simple_data: Data) -> None:
+    theta_init = torch.tensor(
+        [simple_data.response[:, 0].square().mean().log(), 0.3, 0.0, 0.0, 0.1, -1.0]
+    )
+
+    tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
+
+    for i in range(3):
+        with torch.no_grad():
+            y = simple_data.response[i, :]
+            z, z_logdet = tm.compute_z_and_logdet(y)
+            yt = tm.inverse_map(torch.as_tensor(z))
+
+            score_z = tm.log_score_z(z, z_logdet)
+            score = tm.score(yt)
+
+        assert np.allclose(y, yt, atol=1e-6)
+        assert score == pytest.approx(score_z, abs=1e-3)
+
+
 def test_legmods_z_log_score_batched(simple_data: Data) -> None:
     theta_init = torch.tensor(
         [simple_data.response[:, 0].square().mean().log(), 0.3, 0.0, 0.0, 0.1, -1.0]
