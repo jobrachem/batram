@@ -689,6 +689,81 @@ class SimpleTM(torch.nn.Module):
 
         return x_new
 
+    def inverse_map(
+        self,
+        z,
+        last_ind=None,
+    ):
+        """
+        Code mostly copy-and-pasted from cond_samp.
+        """
+
+        num_samples = z.shape[0] if len(z.shape) > 1 else 1
+        x_fix = torch.tensor([])
+
+        augmented_data: AugmentedData = self.augment_data(self.data, None)
+
+        data = self.data.response
+        NN = self.data.conditioning_sets
+        scales = augmented_data.scales
+        sigmas = self.kernel._sigmas(scales)
+        self.intloglik.nug_mult
+
+        nug_mean = self.nugget(augmented_data)
+        kernel_result = self.kernel.forward(augmented_data, nug_mean)
+        nugget_mean = kernel_result.nug_mean
+        chol = kernel_result.GChol
+        tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
+        y_tilde = tmp_res.y_tilde
+        beta_post = tmp_res.beta_post
+        alpha_post = tmp_res.alpha_post
+        n, N = data.shape
+        m = NN.shape[1]
+        if last_ind is None:
+            last_ind = N
+        # loop over variables/locations
+        x_new = torch.empty((num_samples, N))
+        x_new[:, : x_fix.size(0)] = x_fix.repeat(num_samples, 1)
+        x_new[:, x_fix.size(0) :] = 0.0
+        for i in range(x_fix.size(0), last_ind):
+            # predictive distribution for current sample
+            if i == 0:
+                cStar = torch.zeros((num_samples, n))
+                prVar = torch.zeros((num_samples,))
+                cChol = torch.linalg.solve_triangular(
+                    chol[i, :, :], cStar.unsqueeze(-1), upper=False
+                ).squeeze(-1)
+                meanPred = torch.zeros(1)
+                varPredNoNug = torch.zeros(1)
+
+                initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
+                x_new[:, i] = meanPred + initVar.sqrt() * stats.t.ppf(
+                    stats.norm.cdf(z[..., i]), df=2 * alpha_post[i]
+                )
+
+            else:
+                ncol = min(i, m)
+                X = data[:, NN[i, :ncol]]
+                XPred = x_new[:, NN[i, :ncol]].unsqueeze(1)
+                cStar = self.kernel._kernel_fun(
+                    XPred, sigmas[i], nugget_mean[i], X
+                ).squeeze(1)
+                prVar = self.kernel._kernel_fun(
+                    XPred, sigmas[i], nugget_mean[i]
+                ).squeeze((1, 2))
+                cChol = torch.linalg.solve_triangular(
+                    chol[i, :, :], cStar.unsqueeze(-1), upper=False
+                ).squeeze(-1)
+
+                meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
+                varPredNoNug = prVar - cChol.square().sum(1)
+                initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
+                x_new[:, i] = meanPred + initVar.sqrt() * stats.t.ppf(
+                    stats.norm.cdf(z[..., i]), df=2 * alpha_post[i]
+                )
+
+        return x_new.squeeze()
+
     def score(self, obs, x_fix=torch.tensor([]), last_ind=None):
         """
         I'm not sure where this should exactly be implemented.
