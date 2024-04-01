@@ -21,13 +21,17 @@ from typing import Type
 ArrayLike = JaxArray | NumpyArray
 
 
-def setup_ptm(i: int, y: ArrayLike, nparam: int, tau2_cls: Type | None = None, **tau2_kwargs):
+def setup_ptm(i: int, y: ArrayLike, nparam: int, tau2_cls: Type | None = None, knots: ArrayLike | None = None, **tau2_kwargs):
     if tau2_cls is None:
         tau2 = VarInverseGamma(1.0, concentration=1.0, scale=0.5, name=f"tau2_{i}")
     else:
         tau2 = tau2_cls(**tau2_kwargs, name=f"tau2_{i}")
-    model: PTMLocScale = PTMLocScale.from_nparam(y=y, nparam=nparam, normalization_tau2=tau2)
-    model, _ = model.optimize_knots(knot_prob_levels=(0.01, 0.99))
+    if knots is None:
+        model: PTMLocScale = PTMLocScale.from_nparam(y=y, nparam=nparam, normalization_tau2=tau2)
+        model, _ = model.optimize_knots(knot_prob_levels=(0.01, 0.99))
+    else:
+        model: PTMLocScale = PTMLocScale(knots, y, normalization_tau2=tau2)
+
     return model
 
 
@@ -63,8 +67,8 @@ class TransformationTransportMap:
         return loss
     
 
-    def fit_transformation(self, yt: ArrayLike, nparam: int = 10) -> PTMFits:
-        stopper = Stopper(max_iter=10_000, patience=100, atol=0.5, rtol=0.01)
+    def fit_transformation(self, yt: ArrayLike, yt_test: ArrayLike | None = None, nparam: int = 10, max_iter: int = 10_000, patience: int = 100) -> PTMFits:
+        stopper = Stopper(max_iter=max_iter, patience=patience, atol=0.5, rtol=0.01)
 
         models: list[PTMLocScale] = []
         preds: list[PTMLocScalePredictions] = []
@@ -77,7 +81,11 @@ class TransformationTransportMap:
             all_params_i = ptm_i.all_parameter_names()
             graph_i = ptm_i.build_graph(optimize_start_values=False)
 
-            results_i = optim_flat(graph_i, params_i, stopper=stopper)
+            ptm_test_i = None
+            if yt_test is not None:
+                ptm_test_i = setup_ptm(i, yt_test[:, i], nparam=nparam, knots=ptm_i.knots)
+
+            results_i = optim_flat(graph_i, params_i, stopper=stopper, model_test=ptm_test_i)
             graph_i.state = results_i.model_state
             fitted_params_i = state_to_samples(all_params_i, graph_i)
             preds_i = PTMLocScalePredictions(fitted_params_i, ptm_i)
@@ -93,7 +101,7 @@ class TransformationTransportMap:
         self, fits: PTMFits, yt: ArrayLike | None = None
     ) -> tuple[ArrayLike, ArrayLike]:
 
-        nobs = np.shape(fits.preds[0].model.response.value)[0]
+        nobs = np.shape(yt)[0]
         ndim = len(fits.preds)
 
         z = np.zeros((ndim, nobs))
