@@ -53,7 +53,6 @@ class PTMFits:
 
 
 class TransformationTransportMap:
-
     def __init__(self):
         self.batch_size: None | int = None
         self.num_epochs: None | int = None
@@ -82,6 +81,8 @@ class TransformationTransportMap:
         nparam: int = 10,
         max_iter: int = 10_000,
         patience: int = 100,
+        tau2_a: float = 3.0,
+        tau2_b: float = 0.2,
     ) -> PTMFits:
         stopper = Stopper(max_iter=max_iter, patience=patience, atol=0.001, rtol=0.001)
 
@@ -91,7 +92,13 @@ class TransformationTransportMap:
         fitted_params: list[dict[str, ArrayLike]] = []
 
         for i in tqdm(range(yt.shape[1])):
-            ptm_i = setup_ptm(i, yt[:, i], nparam=nparam)
+            ptm_i = setup_ptm(
+                i,
+                yt[:, i],
+                nparam=nparam,
+                tau2_cls=VarInverseGamma,
+                tau2_kwargs={"value": 1.0, "concentration": tau2_a, "scale": tau2_b},
+            )
             params_i = ptm_i.all_sampled_parameter_names()
             all_params_i = ptm_i.all_parameter_names()
             graph_i = ptm_i.build_graph(optimize_start_values=False)
