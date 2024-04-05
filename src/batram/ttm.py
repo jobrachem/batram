@@ -173,7 +173,69 @@ class TransformationTransportMap:
         return PTMFits(
             models=models, preds=preds, results=results, fitted_params=fitted_params
         )
-    
+
+    def fit_transformation_adaptive_switch(
+        self,
+        yt: ArrayLike,
+        yt_test: ArrayLike | None = None,
+        nparam: int = 10,
+        max_iter: int = 10_000,
+        patience: int = 1000,
+        tau2_b_start: float = 0.2,
+        tau2_b_decay_rate: float = 7.0,
+        switch_threshold: float = 0.05,
+    ) -> PTMFits:
+        stopper = Stopper(max_iter=max_iter, patience=patience, atol=0.001, rtol=0.001)
+
+        models: list[PTMLocScale] = []
+        preds: list[PTMLocScalePredictions] = []
+        results: list[OptimResult | None] = []
+        fitted_params: list[dict[str, ArrayLike]] = []
+
+        for i in tqdm(range(yt.shape[1])):
+            _, p = stats.shapiro(yt[:, i])
+            b = 1e-6 + tau2_b_start * np.exp(-tau2_b_decay_rate * p)
+
+            ptm_i = setup_ptm(
+                i,
+                yt[:, i],
+                nparam=nparam,
+                tau2_cls=VarInverseGamma,
+                tau2_kwargs={"value": 1.0, "concentration": 3.0, "scale": b},
+            )
+
+            params_i = ptm_i.all_sampled_parameter_names()
+            all_params_i = ptm_i.all_parameter_names()
+            graph_i = ptm_i.build_graph(optimize_start_values=False)
+
+            ptm_test_i = None
+            if yt_test is not None:
+                ptm_test_i = setup_ptm(
+                    i, yt_test[:, i], nparam=nparam, knots=ptm_i.knots
+                )
+
+            _, p = stats.shapiro(yt[:, i])
+
+            results_i = None
+
+            if p < switch_threshold:
+                results_i = optim_flat(
+                    graph_i, params_i, stopper=stopper, model_test=ptm_test_i
+                )
+                graph_i.state = results_i.model_state
+
+            fitted_params_i = state_to_samples(all_params_i, graph_i)
+            preds_i = PTMLocScalePredictions(fitted_params_i, ptm_i)
+
+            models.append(ptm_i)
+            results.append(results_i)
+            fitted_params.append(fitted_params_i)
+            preds.append(preds_i)
+
+        return PTMFits(
+            models=models, preds=preds, results=results, fitted_params=fitted_params
+        )
+
     def fit_transformation_adaptive(
         self,
         yt: ArrayLike,
