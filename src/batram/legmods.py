@@ -758,15 +758,15 @@ class SimpleTM(torch.nn.Module):
                 meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
                 varPredNoNug = prVar - cChol.square().sum(1)
                 initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
-                
+
                 pnorm = stats.norm.cdf(z[..., i])
                 zt = stats.t.ppf(pnorm, df=2 * alpha_post[i])
-                
+
                 if np.any(np.isinf(pnorm)):
                     warnings.warn(f"Inf encouncetered, {i=}, {pnorm=}, {zt=}.")
                     indices = np.isinf(pnorm).nonzero()
-                    zt[indices] = (stats.t.ppf(1 - 1e-6, df=2 * alpha_post[i]))
-                
+                    zt[indices] = stats.t.ppf(1 - 1e-6, df=2 * alpha_post[i])
+
                 x_new[:, i] = meanPred + initVar.sqrt() * zt
 
         return x_new.squeeze()
