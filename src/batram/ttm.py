@@ -1,22 +1,22 @@
-from tqdm import tqdm
-from .legmods import SimpleTM, Data
-from .btme.runners import ModelRunner
+from dataclasses import dataclass, field
+
+import numpy as np
 from jax import Array as JaxArray
-from numpy.typing import NDArray as NumpyArray
 from liesel_ptm import (
+    OptimResult,
     PTMLocScale,
     PTMLocScalePredictions,
+    Stopper,
     VarInverseGamma,
     optim_flat,
     state_to_samples,
-    Stopper,
-    OptimResult,
 )
-from dataclasses import dataclass, field
+from numpy.typing import NDArray as NumpyArray
 from scipy import stats
-import numpy as np
-import torch
-from typing import Type
+from tqdm import tqdm
+
+from .btme.runners import ModelRunner
+from .legmods import Data
 
 ArrayLike = JaxArray | NumpyArray
 
@@ -25,14 +25,14 @@ def setup_ptm(
     i: int,
     y: ArrayLike,
     nparam: int,
-    tau2_cls: Type | None = None,
+    tau2_cls: type | None = None,
     knots: ArrayLike | None = None,
     **tau2_kwargs,
 ):
     if tau2_cls is None:
         tau2 = VarInverseGamma(1.0, concentration=1.0, scale=0.5, name=f"tau2_{i}")
     else:
-        tau2 = tau2_cls(**tau2_kwargs.get("tau2_kwargs"), name=f"tau2_{i}")
+        tau2 = tau2_cls(**tau2_kwargs.get("tau2_kwargs"), name=f"tau2_{i}")  # type: ignore
     if knots is None:
         model: PTMLocScale = PTMLocScale.from_nparam(
             y=y, nparam=nparam, normalization_tau2=tau2
@@ -141,7 +141,7 @@ class TransformationTransportMap:
                 tau2_cls=VarInverseGamma,
                 tau2_kwargs={"value": 1.0, "concentration": 3.0, "scale": 0.2},
             )
-            
+
             params_i = ptm_i.all_sampled_parameter_names()
             all_params_i = ptm_i.all_parameter_names()
             graph_i = ptm_i.build_graph(optimize_start_values=False)
@@ -181,6 +181,8 @@ class TransformationTransportMap:
         nparam: int = 10,
         max_iter: int = 10_000,
         patience: int = 100,
+        tau2_b_start: float = 0.3,
+        tau2_b_decay_rate: float = 7.0,
     ) -> PTMFits:
         stopper = Stopper(max_iter=max_iter, patience=patience, atol=0.001, rtol=0.001)
 
@@ -191,7 +193,7 @@ class TransformationTransportMap:
 
         for i in tqdm(range(yt.shape[1])):
             _, p = stats.shapiro(yt[:, i])
-            b = 0.003 + (1.0 - p) / 5
+            b = 1e-6 + tau2_b_start * np.exp(-tau2_b_decay_rate * p)
 
             ptm_i = setup_ptm(
                 i,
@@ -200,7 +202,7 @@ class TransformationTransportMap:
                 tau2_cls=VarInverseGamma,
                 tau2_kwargs={"value": 1.0, "concentration": 3.0, "scale": b},
             )
-            
+
             params_i = ptm_i.all_sampled_parameter_names()
             all_params_i = ptm_i.all_parameter_names()
             graph_i = ptm_i.build_graph(optimize_start_values=False)
@@ -210,7 +212,6 @@ class TransformationTransportMap:
                 ptm_test_i = setup_ptm(
                     i, yt_test[:, i], nparam=nparam, knots=ptm_i.knots
                 )
-
 
             results_i = optim_flat(
                 graph_i, params_i, stopper=stopper, model_test=ptm_test_i
@@ -232,7 +233,6 @@ class TransformationTransportMap:
     def compute_normalization_and_logdet(
         self, fits: PTMFits, yt: ArrayLike | None = None
     ) -> tuple[ArrayLike, ArrayLike]:
-
         nobs = np.shape(yt)[0]
         ndim = len(fits.preds)
 
@@ -256,11 +256,13 @@ class TransformationTransportMap:
         return z.T, logdet.T
 
     def log_score_z(self, z: ArrayLike, logdet: ArrayLike, dim=None):
-
         return (stats.norm.logpdf(z) + logdet).sum(axis=dim)
 
-    def fit_iteratively(self): ...
+    def fit_iteratively(self):
+        ...
 
-    def inverse_transformation(self, z: ArrayLike): ...
+    def inverse_transformation(self, z: ArrayLike):
+        ...
 
-    def inverse_map(self, yt: ArrayLike): ...
+    def inverse_map(self, yt: ArrayLike):
+        ...
