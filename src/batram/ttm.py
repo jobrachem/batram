@@ -263,6 +263,7 @@ class TransformationTransportMap:
         for i in tqdm(range(yt.shape[1])):
             _, p = stats.shapiro(yt[:, i])
             b = 1e-6 + tau2_b_start * np.exp(-tau2_b_decay_rate * p)
+            b = b.astype(np.float32)
 
             ptm_i = setup_ptm(
                 i,
