@@ -155,16 +155,16 @@ def fit_combined_model(model: ptm.PTMLocScale) -> dict[str, Array]:
     return samples
 
 
-def score_loc_model(
+def log_prob_loc_model(
     test_df: pd.DataFrame, model: ptm.PTMLocScale, samples: dict[str, Array]
 ) -> Array:
     pred = ptm.PTMLocScalePredictions(
         samples, model, y=test_df.y.to_numpy(), x0=test_df.x0.to_numpy()
     )
-    return -pred.predict_log_prob().mean()
+    return pred.predict_log_prob()
 
 
-def score_loc_model_manual(
+def log_prob_loc_model_manual(
     test_df: pd.DataFrame, model: ptm.PTMLocScale, samples: dict[str, Array]
 ) -> Array:
     pred = ptm.PTMLocScalePredictions(
@@ -175,7 +175,7 @@ def score_loc_model_manual(
     z_deriv = pred.predict_transformation_deriv()
 
     log_prob = model.refdist.log_prob(z) + np.log(z_deriv)
-    return -log_prob.mean()
+    return log_prob
 
 def z_and_deriv(
         df: pd.DataFrame, model: ptm.PTMLocScale, samples: dict[str, Array]
@@ -221,10 +221,10 @@ def score_combined_model(
 def sample_shape_array(key: KeyArray, nshape: int, scale: float) -> Array:
     return ptm.sample_shape(key, nshape=nshape, scale=scale).sample
 
-def compute_log_score(z, z_deriv):
-    return -(normal.log_prob(z) + np.log(z_deriv)).mean()
+def compute_log_prob(z, z_deriv):
+    return normal.log_prob(z) + np.log(z_deriv)
 
-def compute_dist_model_log_score(eps, eps_deriv, dist_model, dist_samples):
+def compute_dist_model_log_prob(eps, eps_deriv, dist_model, dist_samples):
     pred = ptm.PTMLocScalePredictions(
         dist_samples, dist_model, y=eps
     )
@@ -232,7 +232,7 @@ def compute_dist_model_log_score(eps, eps_deriv, dist_model, dist_samples):
     z = pred.predict_transformation()
     z_deriv = pred.predict_transformation_deriv()
 
-    return -(normal.log_prob(z) + np.log(z_deriv) + np.log(eps_deriv)).mean()
+    return normal.log_prob(z) + np.log(z_deriv) + np.log(eps_deriv)
 
 
 
@@ -271,12 +271,12 @@ def run_one_simulation(
     eps_train1, eps_train1_deriv = z_and_deriv(train1, model=loc_model, samples=loc_samples)
     eps_train2, eps_train2_deriv = z_and_deriv(train2, model=loc_model, samples=loc_samples)
 
-    loc_score_test = compute_log_score(eps_test, eps_test_deriv)
-    loc_score_train1 = compute_log_score(eps_train1, eps_train1_deriv)
-    loc_score_train2 = compute_log_score(eps_train2, eps_train2_deriv)
+    loc_prob_test = compute_log_prob(eps_test, eps_test_deriv)
+    loc_prob_train1 = compute_log_prob(eps_train1, eps_train1_deriv)
+    loc_prob_train2 = compute_log_prob(eps_train2, eps_train2_deriv)
 
     combined_samples = fit_combined_model(loc_model)
-    combined_score = score_loc_model(test_df=test, model=loc_model, samples=combined_samples)
+    combined_log_prob = log_prob_loc_model(test_df=test, model=loc_model, samples=combined_samples)
 
     dist_model_train1 = setup_dist_model(
         eps_train1, tau2_a=dist_model_tau2_a, tau2_b=dist_model_tau2_b
@@ -289,23 +289,23 @@ def run_one_simulation(
     )
     dist_samples_train2 = fit_dist_model(dist_model_train2)
 
-    dist_score_test_trained_on_train1 = compute_dist_model_log_score(eps_test, eps_test_deriv, dist_model_train1, dist_samples_train1)
-    dist_score_test_trained_on_train2 = compute_dist_model_log_score(eps_test, eps_test_deriv, dist_model_train2, dist_samples_train2)
+    dist_log_prob_test_trained_on_train1 = compute_dist_model_log_prob(eps_test, eps_test_deriv, dist_model_train1, dist_samples_train1)
+    dist_log_prob_test_trained_on_train2 = compute_dist_model_log_prob(eps_test, eps_test_deriv, dist_model_train2, dist_samples_train2)
 
-    dist_score_train1_trained_on_train1 = compute_dist_model_log_score(eps_train1, eps_train1_deriv, dist_model_train1, dist_samples_train1)
-    dist_score_train2_trained_on_train2 = compute_dist_model_log_score(eps_train2, eps_train2_deriv, dist_model_train2, dist_samples_train2)
+    dist_log_prob_train1_trained_on_train1 = compute_dist_model_log_prob(eps_train1, eps_train1_deriv, dist_model_train1, dist_samples_train1)
+    dist_log_prob_train2_trained_on_train2 = compute_dist_model_log_prob(eps_train2, eps_train2_deriv, dist_model_train2, dist_samples_train2)
 
     data = {}
-    data["loc_score_test"] = float(loc_score_test)
-    data["loc_score_train1"] = float(loc_score_train1)
-    data["loc_score_train2"] = float(loc_score_train2)
+    data["loc_score_test"] = float(-loc_prob_test.mean())
+    data["loc_score_train1"] = float(-loc_prob_train1.mean())
+    data["loc_score_train2"] = float(-loc_prob_train2.mean())
     
-    data["combined_score_test"] = float(combined_score)
-    data["dist_score_test_trained_on_train1"] = float(dist_score_test_trained_on_train1)
-    data["dist_score_test_trained_on_train2"] = float(dist_score_test_trained_on_train2)
+    data["combined_score_test"] = float(-combined_log_prob.mean())
+    data["dist_score_test_trained_on_train1"] = float(-dist_log_prob_test_trained_on_train1.mean())
+    data["dist_score_test_trained_on_train2"] = float(-dist_log_prob_test_trained_on_train2.mean())
 
-    data["dist_score_train1_trained_on_train1"] = float(dist_score_train1_trained_on_train1)
-    data["dist_score_train2_trained_on_train2"] = float(dist_score_train2_trained_on_train2)
+    data["dist_score_train1_trained_on_train1"] = float(-dist_log_prob_train1_trained_on_train1.mean())
+    data["dist_score_train2_trained_on_train2"] = float(-dist_log_prob_train2_trained_on_train2.mean())
 
     data["shape_seed"] = shape_seed
     data["data_seed"] = data_seed
@@ -315,6 +315,12 @@ def run_one_simulation(
     data["n_train1"] = train1.shape[0]
     data["n_train2"] = train2.shape[0]
     data["n_test"] = test.shape[0]
+
+    data["test_score_true"] = -test.log_prob.to_numpy().mean()
+    data["kld_loc_test"] = (test.log_prob.to_numpy() - loc_prob_test).mean()
+    data["kld_dist_test_trained_on_train1"] = (test.log_prob.to_numpy() - dist_log_prob_test_trained_on_train1).mean()
+    data["kld_dist_test_trained_on_train2"] = (test.log_prob.to_numpy() - dist_log_prob_test_trained_on_train2).mean()
+    data["kld_dist_combined_test"] = (test.log_prob.to_numpy() - combined_log_prob).mean()
 
     return data
 
