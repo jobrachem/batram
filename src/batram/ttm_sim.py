@@ -59,6 +59,7 @@ def setup_loc_model(df: pd.DataFrame) -> ptm.PTMLocScale:
         normalization_tau2=ptm.VarInverseGamma(
             value=1.0, concentration=3.0, scale=0.2, name="tau2"
         ),
+        scaling_factor=ptm.TruncatedNormalOmega(name="omega")
     )
 
     model.loc_model += ptm.PSpline(
@@ -109,6 +110,7 @@ def setup_dist_model(
         normalization_tau2=ptm.VarInverseGamma(
             value=1.0, concentration=tau2_a, scale=tau2_b, name="tau2"
         ),
+        scaling_factor=ptm.TruncatedNormalOmega(name="omega")
     )
 
     model, _ = model.optimize_knots(optimize_params=[])
@@ -121,7 +123,7 @@ def fit_dist_model(model: ptm.PTMLocScale) -> dict[str, Array]:
     stopper = ptm.Stopper(max_iter=10_000, patience=500, atol=0.001)
     result = ptm.optim_flat(
         model=graph,
-        params=["normalization_shape_transformed", "tau2_transformed"],
+        params=["normalization_shape_transformed", "tau2_transformed", "omega_transformed"],
         stopper=stopper,
     )
 
@@ -142,6 +144,7 @@ def fit_combined_model(model: ptm.PTMLocScale) -> dict[str, Array]:
             "tau2_x0_transformed",
             "normalization_shape_transformed",
             "tau2_transformed",
+            "omega_transformed"
         ],
         stopper=stopper,
     )
