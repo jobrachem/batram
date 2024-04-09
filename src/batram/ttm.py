@@ -17,8 +17,25 @@ from tqdm import tqdm
 
 from .btme.runners import ModelRunner
 from .legmods import Data
+from joblib import Parallel, delayed
 
 ArrayLike = JaxArray | NumpyArray
+
+class ProgressParallel(Parallel):
+    def __init__(self, use_tqdm=True, total=None, *args, **kwargs):
+        self._use_tqdm = use_tqdm
+        self._total = total
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, *args, **kwargs):
+        with tqdm(disable=not self._use_tqdm, total=self._total) as self._pbar:
+            return Parallel.__call__(self, *args, **kwargs)
+
+    def print_progress(self):
+        if self._total is None:
+            self._pbar.total = self.n_dispatched_tasks
+        self._pbar.n = self.n_completed_tasks
+        self._pbar.refresh()
 
 
 def setup_ptm(
@@ -37,7 +54,7 @@ def setup_ptm(
         model: PTMLocScale = PTMLocScale.from_nparam(
             y=y, nparam=nparam, normalization_tau2=tau2
         )
-        model, _ = model.optimize_knots(knot_prob_levels=(0.01, 0.99))
+        model, _ = model.optimize_knots(optimize_params=[], knot_prob_levels=(0.01, 0.99))
     else:
         model: PTMLocScale = PTMLocScale(knots, y, normalization_tau2=tau2)
 
@@ -50,6 +67,13 @@ class PTMFits:
     models: list[PTMLocScale] = field(default_factory=list)
     results: list[OptimResult | None] = field(default_factory=list)
     fitted_params: list[dict[str, ArrayLike]] = field(default_factory=list)
+
+@dataclass
+class OnePTMFit:
+    pred: PTMLocScalePredictions
+    model: PTMLocScale | None = None
+    result: OptimResult | None = None
+    fitted_params: dict[str, ArrayLike] | None = None
 
 
 class TransformationTransportMap:
@@ -243,6 +267,66 @@ class TransformationTransportMap:
         return PTMFits(
             models=models, preds=preds, results=results, fitted_params=fitted_params
         )
+    
+    def fit_transformation_parallel(
+        self,
+        n_jobs: int,
+        yt: ArrayLike,
+        yt_test: ArrayLike | None = None,
+        nparam: int = 10,
+        max_iter: int = 10_000,
+        patience: int = 1000,
+        tau2_b_start: float = 0.2,
+        tau2_b_decay_rate: float = 7.0,
+        switch_threshold: float = 0.05,
+    ):
+        stopper = Stopper(max_iter=max_iter, patience=patience, atol=0.001, rtol=0.001)
+        
+        @delayed
+        def fn(i: int):
+            _, p = stats.shapiro(yt[:, i])
+            b = 1e-6 + tau2_b_start * np.exp(-tau2_b_decay_rate * p)
+            b = b.astype(np.float32)
+
+            ptm_i = setup_ptm(
+                i,
+                yt[:, i],
+                nparam=nparam,
+                tau2_cls=VarInverseGamma,
+                tau2_kwargs={"value": 1.0, "concentration": 3.0, "scale": b},
+            )
+
+            params_i = ptm_i.all_sampled_parameter_names()
+            all_params_i = ptm_i.all_parameter_names()
+            graph_i = ptm_i.build_graph(optimize_start_values=False)
+
+            ptm_test_i = None
+            if yt_test is not None:
+                ptm_test_i = setup_ptm(
+                    i, yt_test[:, i], nparam=nparam, knots=ptm_i.knots
+                )
+
+            _, p = stats.shapiro(yt[:, i])
+
+            results_i = None
+
+            if p < switch_threshold:
+                results_i = optim_flat(
+                    graph_i, params_i, stopper=stopper, model_test=ptm_test_i
+                )
+                graph_i.state = results_i.model_state
+
+            fitted_params_i = state_to_samples(all_params_i, graph_i)
+            preds_i = PTMLocScalePredictions(fitted_params_i, ptm_i)
+
+            return OnePTMFit(pred=preds_i, model=ptm_i, result=results_i, fitted_params=fitted_params_i)
+        
+        parallel = ProgressParallel(n_jobs=n_jobs)
+
+        generator = (fn(i) for i in range(yt.shape[1]))
+        
+        return parallel(generator)
+
 
     def fit_transformation_adaptive(
         self,
@@ -325,6 +409,31 @@ class TransformationTransportMap:
             logdet[i, :] = np.log(pred.predict_transformation_deriv())
 
         return z.T, logdet.T
+    
+    def compute_normalization_and_logdet_parallel(
+        self, n_jobs: int, fits: list[OnePTMFit], yt: ArrayLike
+    ) -> tuple[ArrayLike, ArrayLike]:
+        ndim = len(fits)
+
+        @delayed
+        def fn(i: int):
+            pred = PTMLocScalePredictions(
+                fits[i].fitted_params, fits[i].model, y=yt[:, i]
+            )
+            z_i = pred.predict_transformation()
+            logdet_i = np.log(pred.predict_transformation_deriv())
+            return z_i.squeeze(), logdet_i.squeeze()
+        
+        parallel = ProgressParallel(n_jobs=n_jobs)
+        generator = (fn(i) for i in range(ndim))
+
+        z_list, logdet_list = zip(*parallel(generator))
+
+        return np.array(z_list).T, np.array(logdet_list).T
+
+
+        
+        
 
     def log_score_z(self, z: ArrayLike, logdet: ArrayLike, dim=None):
         return (stats.norm.logpdf(z) + logdet).sum(axis=dim)
