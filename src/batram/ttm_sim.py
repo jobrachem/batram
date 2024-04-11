@@ -1,25 +1,23 @@
+import logging
 from pathlib import Path
-import numpy as np
-import liesel_ptm as ptm
+
+import click
 import jax
-import liesel.goose as gs
-import jax.numpy as jnp
-from liesel.goose.types import KeyArray, Array
+import liesel_ptm as ptm
+import numpy as np
 import pandas as pd
 import tensorflow_probability.substrates.jax.distributions as tfd
-import click
-import logging
+from liesel.goose.types import Array, KeyArray
 from liesel.logging import add_file_handler
 
-
 normal = tfd.Normal(loc=0.0, scale=1.0)
+
 
 def draw_sample(
     key: KeyArray,
     shape: Array,
     nobs: int,
 ) -> pd.DataFrame:
-
     dg = ptm.PTMLocScaleDataGen(shape, loc_fn=lambda x: 3 * np.sin(x), ncov=1)
     sample = dg.sample(key=key, nobs=nobs)
     df = dg.to_df(sample)
@@ -59,7 +57,7 @@ def setup_loc_model(df: pd.DataFrame) -> ptm.PTMLocScale:
         normalization_tau2=ptm.VarInverseGamma(
             value=1.0, concentration=3.0, scale=0.2, name="tau2"
         ),
-        scaling_factor=ptm.TruncatedNormalOmega(name="omega")
+        scaling_factor=ptm.TruncatedNormalOmega(name="omega"),
     )
 
     model.loc_model += ptm.PSpline(
@@ -74,7 +72,6 @@ def setup_loc_model(df: pd.DataFrame) -> ptm.PTMLocScale:
 
 
 def fit_loc_model(model: ptm.PTMLocScale) -> dict[str, Array]:
-
     graph = model.build_graph(optimize_start_values=False)
 
     stopper = ptm.Stopper(max_iter=10_000, patience=500, atol=0.001)
@@ -110,7 +107,7 @@ def setup_dist_model(
         normalization_tau2=ptm.VarInverseGamma(
             value=1.0, concentration=tau2_a, scale=tau2_b, name="tau2"
         ),
-        scaling_factor=ptm.TruncatedNormalOmega(name="omega")
+        scaling_factor=ptm.TruncatedNormalOmega(name="omega"),
     )
 
     model, _ = model.optimize_knots(optimize_params=[])
@@ -123,7 +120,11 @@ def fit_dist_model(model: ptm.PTMLocScale) -> dict[str, Array]:
     stopper = ptm.Stopper(max_iter=10_000, patience=500, atol=0.001)
     result = ptm.optim_flat(
         model=graph,
-        params=["normalization_shape_transformed", "tau2_transformed", "omega_transformed"],
+        params=[
+            "normalization_shape_transformed",
+            "tau2_transformed",
+            "omega_transformed",
+        ],
         stopper=stopper,
     )
 
@@ -144,7 +145,7 @@ def fit_combined_model(model: ptm.PTMLocScale) -> dict[str, Array]:
             "tau2_x0_transformed",
             "normalization_shape_transformed",
             "tau2_transformed",
-            "omega_transformed"
+            "omega_transformed",
         ],
         stopper=stopper,
     )
@@ -177,10 +178,10 @@ def log_prob_loc_model_manual(
     log_prob = model.refdist.log_prob(z) + np.log(z_deriv)
     return log_prob
 
+
 def z_and_deriv(
-        df: pd.DataFrame, model: ptm.PTMLocScale, samples: dict[str, Array]
+    df: pd.DataFrame, model: ptm.PTMLocScale, samples: dict[str, Array]
 ) -> tuple[Array, Array]:
-    
     pred = ptm.PTMLocScalePredictions(
         samples, model, y=df.y.to_numpy(), x0=df.x0.to_numpy()
     )
@@ -189,7 +190,6 @@ def z_and_deriv(
     z_deriv = pred.predict_transformation_deriv()
     return z, z_deriv
 
-    
 
 def identity_decorator(func):
     # This decorator simply returns the original function
@@ -202,7 +202,6 @@ def score_combined_model(
     loc_samples: dict[str, Array],
     dist_samples: dict[str, Array],
 ) -> Array:
-
     samples = loc_samples.copy()
 
     samples["tau2_transformed"] = dist_samples["tau2_transformed"]
@@ -221,19 +220,18 @@ def score_combined_model(
 def sample_shape_array(key: KeyArray, nshape: int, scale: float) -> Array:
     return ptm.sample_shape(key, nshape=nshape, scale=scale).sample
 
+
 def compute_log_prob(z, z_deriv):
     return normal.log_prob(z) + np.log(z_deriv)
 
+
 def compute_dist_model_log_prob(eps, eps_deriv, dist_model, dist_samples):
-    pred = ptm.PTMLocScalePredictions(
-        dist_samples, dist_model, y=eps
-    )
+    pred = ptm.PTMLocScalePredictions(dist_samples, dist_model, y=eps)
 
     z = pred.predict_transformation()
     z_deriv = pred.predict_transformation_deriv()
 
     return normal.log_prob(z) + np.log(z_deriv) + np.log(eps_deriv)
-
 
 
 def run_one_simulation(
@@ -268,44 +266,65 @@ def run_one_simulation(
     loc_samples = fit_loc_model(loc_model)
 
     eps_test, eps_test_deriv = z_and_deriv(test, model=loc_model, samples=loc_samples)
-    eps_train1, eps_train1_deriv = z_and_deriv(train1, model=loc_model, samples=loc_samples)
-    eps_train2, eps_train2_deriv = z_and_deriv(train2, model=loc_model, samples=loc_samples)
+    eps_train1, eps_train1_deriv = z_and_deriv(
+        train1, model=loc_model, samples=loc_samples
+    )
+    eps_train2, eps_train2_deriv = z_and_deriv(
+        train2, model=loc_model, samples=loc_samples
+    )
 
     loc_prob_test = compute_log_prob(eps_test, eps_test_deriv)
     loc_prob_train1 = compute_log_prob(eps_train1, eps_train1_deriv)
     loc_prob_train2 = compute_log_prob(eps_train2, eps_train2_deriv)
 
     combined_samples = fit_combined_model(loc_model)
-    combined_log_prob = log_prob_loc_model(test_df=test, model=loc_model, samples=combined_samples)
+    combined_log_prob = log_prob_loc_model(
+        test_df=test, model=loc_model, samples=combined_samples
+    )
 
     dist_model_train1 = setup_dist_model(
         eps_train1, tau2_a=dist_model_tau2_a, tau2_b=dist_model_tau2_b
     )
     dist_samples_train1 = fit_dist_model(dist_model_train1)
 
-    
     dist_model_train2 = setup_dist_model(
         eps_train2, tau2_a=dist_model_tau2_a, tau2_b=dist_model_tau2_b
     )
     dist_samples_train2 = fit_dist_model(dist_model_train2)
 
-    dist_log_prob_test_trained_on_train1 = compute_dist_model_log_prob(eps_test, eps_test_deriv, dist_model_train1, dist_samples_train1)
-    dist_log_prob_test_trained_on_train2 = compute_dist_model_log_prob(eps_test, eps_test_deriv, dist_model_train2, dist_samples_train2)
+    dist_log_prob_test_trained_on_train1 = compute_dist_model_log_prob(
+        eps_test, eps_test_deriv, dist_model_train1, dist_samples_train1
+    )
+    dist_log_prob_test_trained_on_train2 = compute_dist_model_log_prob(
+        eps_test, eps_test_deriv, dist_model_train2, dist_samples_train2
+    )
 
-    dist_log_prob_train1_trained_on_train1 = compute_dist_model_log_prob(eps_train1, eps_train1_deriv, dist_model_train1, dist_samples_train1)
-    dist_log_prob_train2_trained_on_train2 = compute_dist_model_log_prob(eps_train2, eps_train2_deriv, dist_model_train2, dist_samples_train2)
+    dist_log_prob_train1_trained_on_train1 = compute_dist_model_log_prob(
+        eps_train1, eps_train1_deriv, dist_model_train1, dist_samples_train1
+    )
+    dist_log_prob_train2_trained_on_train2 = compute_dist_model_log_prob(
+        eps_train2, eps_train2_deriv, dist_model_train2, dist_samples_train2
+    )
 
     data = {}
     data["loc_score_test"] = float(-loc_prob_test.mean())
     data["loc_score_train1"] = float(-loc_prob_train1.mean())
     data["loc_score_train2"] = float(-loc_prob_train2.mean())
-    
-    data["combined_score_test"] = float(-combined_log_prob.mean())
-    data["dist_score_test_trained_on_train1"] = float(-dist_log_prob_test_trained_on_train1.mean())
-    data["dist_score_test_trained_on_train2"] = float(-dist_log_prob_test_trained_on_train2.mean())
 
-    data["dist_score_train1_trained_on_train1"] = float(-dist_log_prob_train1_trained_on_train1.mean())
-    data["dist_score_train2_trained_on_train2"] = float(-dist_log_prob_train2_trained_on_train2.mean())
+    data["combined_score_test"] = float(-combined_log_prob.mean())
+    data["dist_score_test_trained_on_train1"] = float(
+        -dist_log_prob_test_trained_on_train1.mean()
+    )
+    data["dist_score_test_trained_on_train2"] = float(
+        -dist_log_prob_test_trained_on_train2.mean()
+    )
+
+    data["dist_score_train1_trained_on_train1"] = float(
+        -dist_log_prob_train1_trained_on_train1.mean()
+    )
+    data["dist_score_train2_trained_on_train2"] = float(
+        -dist_log_prob_train2_trained_on_train2.mean()
+    )
 
     data["shape_seed"] = shape_seed
     data["data_seed"] = data_seed
@@ -318,9 +337,15 @@ def run_one_simulation(
 
     data["test_score_true"] = -test.log_prob.to_numpy().mean()
     data["kld_loc_test"] = (test.log_prob.to_numpy() - loc_prob_test).mean()
-    data["kld_dist_test_trained_on_train1"] = (test.log_prob.to_numpy() - dist_log_prob_test_trained_on_train1).mean()
-    data["kld_dist_test_trained_on_train2"] = (test.log_prob.to_numpy() - dist_log_prob_test_trained_on_train2).mean()
-    data["kld_dist_combined_test"] = (test.log_prob.to_numpy() - combined_log_prob).mean()
+    data["kld_dist_test_trained_on_train1"] = (
+        test.log_prob.to_numpy() - dist_log_prob_test_trained_on_train1
+    ).mean()
+    data["kld_dist_test_trained_on_train2"] = (
+        test.log_prob.to_numpy() - dist_log_prob_test_trained_on_train2
+    ).mean()
+    data["kld_dist_combined_test"] = (
+        test.log_prob.to_numpy() - combined_log_prob
+    ).mean()
 
     return data
 
@@ -353,13 +378,13 @@ def setup_logging(data_seed: int, shape_seed: int, path: Path | str):
     "--shape_seed", help="Seed for random number generation.", required=True, type=int
 )
 @click.option("--nobs", help="Sample size to use.", required=True, type=int)
-@click.option(
-    "--path", help="Directory.", required=True, type=str
-)
+@click.option("--path", help="Directory.", required=True, type=str)
 def run(data_seed, shape_seed, nobs, path):
     path = Path(path)
-    out_path = path / "out" / f"results-data{data_seed}-shape{shape_seed}-nobs{nobs}.csv"
-    
+    out_path = (
+        path / "out" / f"results-data{data_seed}-shape{shape_seed}-nobs{nobs}.csv"
+    )
+
     logger = logging.getLogger("ttm_sim")
     setup_logging(data_seed=data_seed, shape_seed=shape_seed, path=path / "logs")
 
@@ -370,12 +395,11 @@ def run(data_seed, shape_seed, nobs, path):
     logger.info(f"STARTING {data_seed=}, {shape_seed=}")
     data = run_one_simulation(data_seed=data_seed, shape_seed=shape_seed, nobs=nobs)
 
-
     out_path.parent.mkdir(exist_ok=True, parents=True)
     pd.DataFrame(data, index=[0]).to_csv(out_path, index=False)
 
     logger.info(f"FINISHED {data_seed=}, {shape_seed=}")
-    
-    
+
+
 if __name__ == "__main__":
     run()
