@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 from jax import Array as JaxArray
+from joblib import Parallel, delayed
 from liesel_ptm import (
     OptimResult,
     PTMLocScale,
@@ -17,9 +18,9 @@ from tqdm import tqdm
 
 from .btme.runners import ModelRunner
 from .legmods import Data
-from joblib import Parallel, delayed
 
 ArrayLike = JaxArray | NumpyArray
+
 
 class ProgressParallel(Parallel):
     def __init__(self, use_tqdm=True, total=None, *args, **kwargs):
@@ -49,14 +50,19 @@ def setup_ptm(
     if tau2_cls is None:
         tau2 = VarInverseGamma(1.0, concentration=1.0, scale=0.5, name=f"tau2_{i}")
     else:
-        tau2 = tau2_cls(**tau2_kwargs.get("tau2_kwargs"), name=f"tau2_{i}")  # type: ignore
+        tau2 = tau2_cls(
+            **tau2_kwargs.get("tau2_kwargs"), name=f"tau2_{i}"
+        )  # type: ignore
+
     if knots is None:
         model: PTMLocScale = PTMLocScale.from_nparam(
             y=y, nparam=nparam, normalization_tau2=tau2
         )
-        model, _ = model.optimize_knots(optimize_params=[], knot_prob_levels=(0.01, 0.99))
+        model, _ = model.optimize_knots(
+            optimize_params=[], knot_prob_levels=(0.01, 0.99)
+        )
     else:
-        model: PTMLocScale = PTMLocScale(knots, y, normalization_tau2=tau2)
+        model = PTMLocScale(knots, y, normalization_tau2=tau2)
 
     return model
 
@@ -67,6 +73,7 @@ class PTMFits:
     models: list[PTMLocScale] = field(default_factory=list)
     results: list[OptimResult | None] = field(default_factory=list)
     fitted_params: list[dict[str, ArrayLike]] = field(default_factory=list)
+
 
 @dataclass
 class OnePTMFit:
@@ -91,8 +98,8 @@ class TransformationTransportMap:
         assert self.num_epochs is not None, f"{self.num_epochs=} must not be None."
         test_data = test_data if test_data is None else train_data
         loss = runner.fit_model(
-            train_data=train_data,
-            test_data=test_data,
+            train_data=train_data,  # type: ignore
+            test_data=test_data,  # type: ignore
             num_epochs=self.num_epochs,
             batch_size=self.batch_size,
         )
@@ -267,7 +274,7 @@ class TransformationTransportMap:
         return PTMFits(
             models=models, preds=preds, results=results, fitted_params=fitted_params
         )
-    
+
     def fit_transformation_parallel(
         self,
         n_jobs: int,
@@ -281,7 +288,7 @@ class TransformationTransportMap:
         switch_threshold: float = 0.05,
     ):
         stopper = Stopper(max_iter=max_iter, patience=patience, atol=0.001, rtol=0.001)
-        
+
         @delayed
         def fn(i: int):
             _, p = stats.shapiro(yt[:, i])
@@ -319,14 +326,18 @@ class TransformationTransportMap:
             fitted_params_i = state_to_samples(all_params_i, graph_i)
             preds_i = PTMLocScalePredictions(fitted_params_i, ptm_i)
 
-            return OnePTMFit(pred=preds_i, model=ptm_i, result=results_i, fitted_params=fitted_params_i)
-        
+            return OnePTMFit(
+                pred=preds_i,
+                model=ptm_i,
+                result=results_i,
+                fitted_params=fitted_params_i,
+            )
+
         parallel = ProgressParallel(n_jobs=n_jobs)
 
         generator = (fn(i) for i in range(yt.shape[1]))
-        
-        return parallel(generator)
 
+        return parallel(generator)
 
     def fit_transformation_adaptive(
         self,
@@ -388,7 +399,7 @@ class TransformationTransportMap:
     def compute_normalization_and_logdet(
         self, fits: PTMFits, yt: ArrayLike | None = None
     ) -> tuple[ArrayLike, ArrayLike]:
-        nobs = np.shape(yt)[0]
+        nobs = np.shape(yt)[0]  # type: ignore
         ndim = len(fits.preds)
 
         z = np.zeros((ndim, nobs))
@@ -409,7 +420,7 @@ class TransformationTransportMap:
             logdet[i, :] = np.log(pred.predict_transformation_deriv())
 
         return z.T, logdet.T
-    
+
     def compute_normalization_and_logdet_parallel(
         self, n_jobs: int, fits: list[OnePTMFit], yt: ArrayLike
     ) -> tuple[ArrayLike, ArrayLike]:
@@ -423,17 +434,33 @@ class TransformationTransportMap:
             z_i = pred.predict_transformation()
             logdet_i = np.log(pred.predict_transformation_deriv())
             return z_i.squeeze(), logdet_i.squeeze()
-        
+
         parallel = ProgressParallel(n_jobs=n_jobs)
         generator = (fn(i) for i in range(ndim))
 
-        z_list, logdet_list = zip(*parallel(generator))
+        results = parallel(generator)
+        z_list, logdet_list = zip(*results)
 
         return np.array(z_list).T, np.array(logdet_list).T
 
+    def compute_normalization_and_logdet_nonparallel(
+        self, n_jobs: int, fits: list[OnePTMFit], yt: ArrayLike
+    ) -> tuple[ArrayLike, ArrayLike]:
+        ndim = len(fits)
 
-        
-        
+        def fn(i: int):
+            pred = PTMLocScalePredictions(
+                fits[i].fitted_params, fits[i].model, y=yt[:, i]
+            )
+            z_i = pred.predict_transformation()
+            logdet_i = np.log(pred.predict_transformation_deriv())
+            return z_i.squeeze(), logdet_i.squeeze()
+
+        results = [fn(i) for i in tqdm(range(ndim), total=ndim)]
+
+        z_list, logdet_list = zip(*results)
+
+        return np.array(z_list).T, np.array(logdet_list).T
 
     def log_score_z(self, z: ArrayLike, logdet: ArrayLike, dim=None):
         return (stats.norm.logpdf(z) + logdet).sum(axis=dim)
