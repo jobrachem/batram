@@ -493,7 +493,7 @@ def run(data_seed, shape_seed, nobs, path):
     )
 
     logger = logging.getLogger("ttm_sim")
-    setup_logging(data_seed=data_seed, shape_seed=shape_seed, path=path / "logs")
+    setup_logging(data_seed=data_seed, shape_seed=shape_seed, path=path / "logs", nobs=nobs)
 
     if out_path.exists():
         logger.info(f"SKIPPING, because {out_path=} exists.")
