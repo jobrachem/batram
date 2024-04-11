@@ -307,7 +307,7 @@ def run_one_simulation(
         cache = ptm.cache(cache_path)
     else:
         cache = identity_decorator
-        cache_path = Path.cwd()
+        
     
     use_mcmc_cache = cache_path is not None
 
@@ -315,6 +315,9 @@ def run_one_simulation(
         data_cache = ptm.cache(data_cache_path)
     else:
         data_cache = cache
+
+    if not use_mcmc_cache:
+        cache_path = Path.cwd()
 
     shape_key = jax.random.PRNGKey(shape_seed)
     shape = data_cache(sample_shape_array)(shape_key, nshape=10, scale=0.5)
