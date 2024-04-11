@@ -301,13 +301,13 @@ def run_one_simulation(
     warmup_duration: int = 1000,
     posterior_duration: int = 1000,
 ) -> dict[str, float | int]:
+    
     if cache_path is not None:
         cache_path = Path(cache_path) / f"cache-data_seed_{data_seed}-shape_seed_{shape_seed}-n{nobs}"
         cache_path.mkdir(exist_ok=True, parents=True)
         cache = ptm.cache(cache_path)
     else:
         cache = identity_decorator
-        
     
     use_mcmc_cache = cache_path is not None
 
@@ -465,6 +465,8 @@ def setup_logging(data_seed: int, shape_seed: int, path: Path | str, nobs: int):
     logger = logging.getLogger("ttm_sim")
     logger.setLevel(logging.INFO)
 
+    logging.getLogger("liesel_ptm").setLevel(logging.INFO)
+
     path = Path(path).resolve()
     logs = path
     logs.mkdir(exist_ok=True, parents=False)
@@ -476,6 +478,8 @@ def setup_logging(data_seed: int, shape_seed: int, path: Path | str, nobs: int):
 
     logfile = logs / f"log-data_seed_{data_seed}-shape_seed_{shape_seed}-n{nobs}.log"
     add_file_handler(path=logfile, level="info", logger="ttm_sim")
+    add_file_handler(path=logfile, level="info", logger="liesel")
+    add_file_handler(path=logfile, level="info", logger="liesel_ptm")
 
     if simlogger_stdout is not None:
         logger.removeHandler(simlogger_stdout)
