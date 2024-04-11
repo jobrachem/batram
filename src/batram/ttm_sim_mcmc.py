@@ -307,6 +307,7 @@ def run_one_simulation(
         cache = ptm.cache(cache_path)
     else:
         cache = identity_decorator
+        cache_path = Path.cwd()
     
     use_mcmc_cache = cache_path is not None
 
