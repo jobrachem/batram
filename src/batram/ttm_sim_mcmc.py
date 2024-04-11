@@ -80,7 +80,7 @@ def fit_loc_model(
     warmup_duration: int,
     posterior_duration: int,
     use_cache: bool,
-    cache_filepath: str | Path = "",
+    cache_filepath: str | Path = Path.cwd(),
 ) -> dict[str, Array]:
 
     graph = model.build_graph(optimize_start_values=False)
@@ -138,7 +138,7 @@ def fit_dist_model(
     warmup_duration: int,
     posterior_duration: int,
     use_cache: bool,
-    cache_filepath: str | Path = "",
+    cache_filepath: str | Path = Path.cwd(),
 ) -> dict[str, Array]:
     graph = model.build_graph(optimize_start_values=True)
 
@@ -193,7 +193,7 @@ def fit_combined_model(
     warmup_duration: int,
     posterior_duration: int,
     use_cache: bool,
-    cache_filepath: str | Path = "",
+    cache_filepath: str | Path = Path.cwd(),
 ) -> dict[str, Array]:
     graph = model.build_graph(optimize_start_values=True)
 
