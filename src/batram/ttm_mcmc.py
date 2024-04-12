@@ -77,6 +77,7 @@ def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike,
     model_filepath.parent.mkdir(exist_ok=True, parents=True)
 
     if model_filepath.exists():
+        logger.info(f"Loading transport map from {model_filepath}")
         with open(model_filepath, "rb") as fp:
             return pickle.load(fp)
 
@@ -95,6 +96,7 @@ def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike,
     tm = SimpleTM(train_data, theta_init=None, linear=False, smooth=1.5, nug_mult=4.0)
     stopper = EarlyStopper(patience=200, min_diff=3e-1)
 
+    logger.info(f"Fitting transport map.")
     tm.fit(
         num_iter=nsteps,
         init_lr=0.01,
@@ -102,7 +104,8 @@ def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike,
         batch_size=None,
         stopper=stopper,
     )
-
+    
+    logger.info(f"Saving transport map to {model_filepath}")
     with open(model_filepath, "wb") as fp:
         pickle.dump(tm, fp)
 
@@ -114,12 +117,15 @@ def compute_yt_and_logdet(cache_path: str | Path, suffix: str, y: ArrayLike, tm:
     data_filepath.parent.mkdir(exist_ok=True, parents=True)
 
     if data_filepath.exists():
+        logger.info(f"Loading data from {data_filepath}")
         with open(data_filepath, "rb") as fp:
             return pickle.load(fp)
     
+    logger.info(f"Computing yt and logdet")
     with torch.no_grad():
         yt, yt_logdet = tm.compute_z_and_logdet_batched(obs=y)
 
+    logger.info(f"Saving data to {data_filepath}")
     with open(data_filepath, "wb") as fp:
         pickle.dump((yt, yt_logdet), fp)
     
