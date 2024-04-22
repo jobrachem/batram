@@ -69,7 +69,7 @@ def preprocess_transport_map_data(obs: ArrayLike, locs: ArrayLike, ntrain1: int,
     train2 = obs[ntrain1:(ntrain1 + ntrain2), :]
     test = obs[-ntest:, :]
 
-    return train1, train2, test
+    return train1, train2, test, locs
 
 
 def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike, test: ArrayLike) -> SimpleTM:
