@@ -1,11 +1,11 @@
-import liesel.model as lsl
-from typing import Any
-import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
-import tensorflow_probability.substrates.jax.distributions as tfd
-import jax.numpy as jnp
-import jax
 from functools import partial
+from typing import Any
+
+import jax.numpy as jnp
+import liesel.model as lsl
 import liesel_ptm as ptm
+import tensorflow_probability.substrates.jax.distributions as tfd
+import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 
 Array = Any
 
@@ -110,13 +110,15 @@ def delta_param(locs: Array, D: int, eta: lsl.Var) -> lsl.Var:
         delta_long = jnp.kron(W, jnp.exp(eta) * IN) @ latent_delta
         return jnp.reshape(delta_long, (D - 1, locs.shape[0]))
 
-    delta = lsl.Var(lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta), name="delta")
+    delta = lsl.Var(
+        lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta), name="delta"
+    )
 
     return delta
 
 
 @partial(jnp.vectorize, excluded=[1], signature="(d)->()")
-def sfn(exp_shape, dknots: float):
+def sfn(exp_shape, dknots: float | Array):
     order = 3
     p = jnp.shape(exp_shape)[-1] + 1
 
@@ -132,7 +134,7 @@ def sfn(exp_shape, dknots: float):
     return jnp.squeeze((1 / ((p - order) * dknots)) * summed_exp_shape)
 
 
-def shape_coef(delta: lsl.Var, dknots: float) -> lsl.Var:
+def shape_coef(delta: lsl.Var, dknots: float | Array) -> lsl.Var:
     def _compute_shape_coef(delta):
         exp_delta = jnp.exp(delta)
         slope_correction_factor = sfn(exp_delta.T, dknots)
@@ -288,45 +290,54 @@ class Model:
     @property
     def eta_param_name(self) -> str:
         return self.eta.name
-    
+
     @property
     def eta_hyperparam_names(self) -> list[str]:
         kernel_value = self.eta.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [param_var_value.var.name for param_var_value in kernel_value.kwinputs.values()]
+        hyperparam_names = [
+            param_var_value.var.name
+            for param_var_value in kernel_value.kwinputs.values()
+        ]
         return hyperparam_names
-    
+
     @property
     def delta_param_name(self) -> str:
         return self.delta.value_node.kwinputs["latent_delta"].var.name
-    
+
     @property
     def delta_hyperparam_names(self) -> list[str]:
         latent_delta = self.delta.value_node.kwinputs["latent_delta"].var
         kernel_value = latent_delta.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [param_var_value.var.name for param_var_value in kernel_value.kwinputs.values()]
+        hyperparam_names = [
+            param_var_value.var.name
+            for param_var_value in kernel_value.kwinputs.values()
+        ]
         return hyperparam_names
-    
+
     @property
     def alpha_param_name(self) -> str:
         return self.alpha.value_node.inputs[0].var.name
-    
+
     @property
     def alpha_hyperparam_names(self) -> list[str]:
         alpha_var = self.alpha.value_node.inputs[0].var
         kernel_value = alpha_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [param_var_value.var.name for param_var_value in kernel_value.kwinputs.values()]
+        hyperparam_names = [
+            param_var_value.var.name
+            for param_var_value in kernel_value.kwinputs.values()
+        ]
         return hyperparam_names
 
     @property
     def beta_param_name(self) -> str:
         return self.exp_beta.value_node.inputs[0].var.name
-    
+
     @property
     def beta_hyperparam_names(self) -> list[str]:
         beta_var = self.exp_beta.value_node.inputs[0].var
         kernel_value = beta_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [param_var_value.var.name for param_var_value in kernel_value.kwinputs.values()]
+        hyperparam_names = [
+            param_var_value.var.name
+            for param_var_value in kernel_value.kwinputs.values()
+        ]
         return hyperparam_names
-
-
-        

@@ -101,7 +101,7 @@ def fit_transport_map(
     tm = SimpleTM(train_data, theta_init=None, linear=False, smooth=1.5, nug_mult=4.0)
     stopper = EarlyStopper(patience=200, min_diff=3e-1)
 
-    logger.info(f"Fitting transport map.")
+    logger.info("Fitting transport map.")
     tm.fit(
         num_iter=nsteps,
         init_lr=0.01,
@@ -128,7 +128,7 @@ def compute_yt_and_logdet(
         with open(data_filepath, "rb") as fp:
             return pickle.load(fp)
 
-    logger.info(f"Computing yt and logdet")
+    logger.info("Computing yt and logdet")
     with torch.no_grad():
         yt, yt_logdet = tm.compute_z_and_logdet_batched(obs=y)
 

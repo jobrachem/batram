@@ -3,7 +3,6 @@ from pathlib import Path
 
 import click
 import jax
-import jax.numpy as jnp
 import liesel.goose as gs
 import liesel_ptm as ptm
 import numpy as np
