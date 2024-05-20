@@ -203,10 +203,9 @@ def model() -> Iterator[tm.Model]:
 
     locs = jrd.uniform(key, shape=(nloc, 2))
     y = 2 * jrd.normal(key, (nloc, nobs))
-    yvar = lsl.obs(y)
     knots = jnp.linspace(-5, 5, D + 4)
 
-    model = tm.Model(yvar, knots=knots, locs=locs)
+    model = tm.Model(y, knots=knots, locs=locs)
     yield model
 
 
@@ -219,10 +218,9 @@ class TestModel:
         locs = jrd.uniform(key, shape=(nloc, 2))
         y = 2 * jrd.normal(key, (nloc, nobs))
 
-        yvar = lsl.obs(y)
         knots = jnp.linspace(-5, 5, D + 4)
 
-        model = tm.Model(yvar, knots=knots, locs=locs)
+        model = tm.Model(y, knots=knots, locs=locs)
 
         assert model.normalization_and_deriv.value[0].shape == y.shape
 
@@ -239,10 +237,9 @@ class TestModel:
         locs = jrd.uniform(key, shape=(nloc, 2))
         y = 2 * jrd.normal(key, (nloc, nobs))
 
-        yvar = lsl.obs(y)
         knots = jnp.linspace(-5, 5, D + 4)
 
-        model = tm.Model(yvar, knots=knots, locs=locs)
+        model = tm.Model(y, knots=knots, locs=locs)
         assert model.response.log_prob.shape == (nloc, nobs)
 
         assert jnp.allclose(
@@ -272,3 +269,22 @@ class TestModel:
 
     def test_beta_hyperparam_names(self, model):
         assert model.beta_hyperparam_names == ["amplitude_beta", "length_scale_beta"]
+
+
+def test_predict_normalization():
+    nloc = 10
+    nobs = 50
+    D = 6
+
+    locs = jrd.uniform(key, shape=(nloc, 2))
+    y = 2 * jrd.normal(key, (nloc, nobs))
+
+    knots = jnp.linspace(-5, 5, D + 4)
+
+    model = tm.Model(y[:, :10], knots=knots, locs=locs)
+    graph = model.build_graph()
+
+    z = tm.predict_normalization(graph, y, graph.state)
+
+    assert z.shape == (nloc, nobs)
+    assert jnp.allclose(z, y, atol=1e-5)

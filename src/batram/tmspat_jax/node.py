@@ -6,6 +6,7 @@ import liesel.model as lsl
 import liesel_ptm as ptm
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
+from liesel.goose.types import ModelState
 
 Array = Any
 
@@ -156,7 +157,7 @@ def alpha_param(locs: Array, knots: Array, name: str = "alpha") -> lsl.Var:
         x=locs,
         kernel_class=tfk.ExponentiatedQuadratic,
         **kernel_args,
-        name="kernel_{name}",
+        name=f"kernel_{name}",
     )
 
     alpha = lsl.param(
@@ -185,7 +186,7 @@ def beta_param(locs: Array, name: str = "beta") -> lsl.Var:
         x=locs,
         kernel_class=tfk.ExponentiatedQuadratic,
         **kernel_args,
-        name="kernel_{name}",
+        name=f"kernel_{name}",
     )
 
     beta = lsl.param(
@@ -212,7 +213,7 @@ def eta_param(locs: Array, name: str = "eta") -> lsl.Var:
         x=locs,
         kernel_class=tfk.ExponentiatedQuadratic,
         **kernel_args,
-        name="kernel_{name}",
+        name=f"kernel_{name}",
     )
 
     eta = lsl.param(
@@ -244,7 +245,7 @@ def trafo_coef(alpha: lsl.Var, exp_beta: lsl.Var, shape_coef: lsl.Var) -> lsl.Va
 
 
 class Model:
-    def __init__(self, y: lsl.Var, knots: Array, locs: Array) -> None:
+    def __init__(self, y: Array, knots: Array, locs: Array) -> None:
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
 
@@ -263,8 +264,10 @@ class Model:
             target_slope=1.0
         )
 
+        self.response_value = lsl.Data(y, _name="response_value")
+
         self.normalization_and_deriv = lsl.Var(
-            lsl.Calc(basis_dot_and_deriv_fn, y, self.coef),
+            lsl.Calc(basis_dot_and_deriv_fn, self.response_value, self.coef),
             name="normalization_and_deriv",
         ).update()
 
@@ -273,7 +276,8 @@ class Model:
         ).update()
 
         self.normalization_deriv = lsl.Var(
-            lsl.Calc(lambda x: x[1], self.normalization_and_deriv), name="normalization"
+            lsl.Calc(lambda x: x[1], self.normalization_and_deriv),
+            name="normalization_deriv",
         ).update()
 
         self.refdist = tfd.Normal(loc=0.0, scale=1.0)
@@ -284,8 +288,14 @@ class Model:
         response_dist = ptm.TransformationDist(
             self.normalization, self.normalization_deriv, refdist=self.refdist
         )
-        self.response = lsl.obs(y, response_dist, name="response").update()
+        self.response = lsl.obs(
+            self.response_value, response_dist, name="response"
+        ).update()
         """Response variable."""
+
+    def build_graph(self):
+        graph = lsl.GraphBuilder().add(self.response).build_model()
+        return graph
 
     @property
     def eta_param_name(self) -> str:
@@ -341,3 +351,13 @@ class Model:
             for param_var_value in kernel_value.kwinputs.values()
         ]
         return hyperparam_names
+
+
+def predict_normalization(graph: lsl.Model, y: Array, model_state: ModelState) -> Array:
+    """
+    y: (Nloc, Nobs)
+    """
+    graph.state = model_state
+    graph.nodes["response_value"].value = y
+    graph.update()
+    return graph.vars["normalization"].value
