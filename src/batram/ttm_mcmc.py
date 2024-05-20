@@ -1,10 +1,11 @@
 import logging
-import torch
-import veccs.orderings
 from pathlib import Path
 
-import numpy as np
 import dill as pickle
+import liesel.goose as gs
+import numpy as np
+import torch
+import veccs.orderings
 from jax import Array as JaxArray
 from liesel_ptm import (
     PTMLocScale,
@@ -12,12 +13,12 @@ from liesel_ptm import (
     VarInverseGamma,
     cache_results,
 )
-import liesel.goose as gs
 from numpy.typing import NDArray as NumpyArray
 from scipy import stats
 
-from .legmods import Data, SimpleTM
 from batram.stopper import EarlyStopper
+
+from .legmods import Data, SimpleTM
 
 ArrayLike = JaxArray | NumpyArray
 
@@ -52,7 +53,9 @@ def setup_ptm(
     return model
 
 
-def preprocess_transport_map_data(obs: ArrayLike, locs: ArrayLike, ntrain1: int, ntrain2: int, ntest: int) -> tuple[ArrayLike, ArrayLike, ArrayLike]:
+def preprocess_transport_map_data(
+    obs: ArrayLike, locs: ArrayLike, ntrain1: int, ntrain2: int, ntest: int
+) -> tuple[ArrayLike, ArrayLike, ArrayLike]:
     obs = torch.as_tensor(obs, dtype=torch.float32)
     ord = np.lexsort((locs[:, 1], locs[:, 0]))
     locs = locs[ord]
@@ -66,13 +69,15 @@ def preprocess_transport_map_data(obs: ArrayLike, locs: ArrayLike, ntrain1: int,
     obs = obs[..., order]
 
     train1 = obs[:ntrain1, :]
-    train2 = obs[ntrain1:(ntrain1 + ntrain2), :]
+    train2 = obs[ntrain1 : (ntrain1 + ntrain2), :]
     test = obs[-ntest:, :]
 
     return train1, train2, test, locs
 
 
-def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike, test: ArrayLike) -> SimpleTM:
+def fit_transport_map(
+    cache_path: str | Path, locs: ArrayLike, train: ArrayLike, test: ArrayLike
+) -> SimpleTM:
     model_filepath = cache_path / "map" / "map.pkl"
     model_filepath.parent.mkdir(exist_ok=True, parents=True)
 
@@ -104,7 +109,7 @@ def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike,
         batch_size=None,
         stopper=stopper,
     )
-    
+
     logger.info(f"Saving transport map to {model_filepath}")
     with open(model_filepath, "wb") as fp:
         pickle.dump(tm, fp)
@@ -112,7 +117,9 @@ def fit_transport_map(cache_path: str | Path, locs: ArrayLike, train: ArrayLike,
     return tm
 
 
-def compute_yt_and_logdet(cache_path: str | Path, suffix: str, y: ArrayLike, tm: SimpleTM) -> tuple[ArrayLike, ArrayLike]:
+def compute_yt_and_logdet(
+    cache_path: str | Path, suffix: str, y: ArrayLike, tm: SimpleTM
+) -> tuple[ArrayLike, ArrayLike]:
     data_filepath = cache_path / "map" / f"yt_and_logdet-{suffix}.pkl"
     data_filepath.parent.mkdir(exist_ok=True, parents=True)
 
@@ -120,7 +127,7 @@ def compute_yt_and_logdet(cache_path: str | Path, suffix: str, y: ArrayLike, tm:
         logger.info(f"Loading data from {data_filepath}")
         with open(data_filepath, "rb") as fp:
             return pickle.load(fp)
-    
+
     logger.info(f"Computing yt and logdet")
     with torch.no_grad():
         yt, yt_logdet = tm.compute_z_and_logdet_batched(obs=y)
@@ -128,17 +135,18 @@ def compute_yt_and_logdet(cache_path: str | Path, suffix: str, y: ArrayLike, tm:
     logger.info(f"Saving data to {data_filepath}")
     with open(data_filepath, "wb") as fp:
         pickle.dump((yt, yt_logdet), fp)
-    
+
     return yt, yt_logdet
 
 
-def load_map_yt_and_logdet(cache_path: str | Path, suffix: str) -> tuple[ArrayLike, ArrayLike]:
+def load_map_yt_and_logdet(
+    cache_path: str | Path, suffix: str
+) -> tuple[ArrayLike, ArrayLike]:
     data_filepath = cache_path / "map" / f"yt_and_logdet-{suffix}.pkl"
     data_filepath.parent.mkdir(exist_ok=True, parents=True)
 
     with open(data_filepath, "rb") as fp:
         return pickle.load(fp)
-
 
 
 def fit_transformation_adaptive_switch(
@@ -154,7 +162,6 @@ def fit_transformation_adaptive_switch(
     tau2_b_decay_rate: float = 7.0,
     switch_threshold: float = 1.0,
 ) -> gs.SamplingResults:
-
     logger.info(f"Starting transformation fit {i=}")
 
     Path(cache_path).mkdir(exist_ok=True, parents=True)
@@ -213,7 +220,6 @@ def fit_transformation_adaptive_switch(
 def compute_normalization_and_logdet(
     i: int, cache_path: str | Path, suffix: str, yt: ArrayLike | None = None
 ) -> tuple[ArrayLike, ArrayLike]:
-
     Path(cache_path).mkdir(exist_ok=True, parents=True)
 
     model_filepath = Path(cache_path) / "models" / f"ptm_{i}.pkl"
@@ -278,4 +284,4 @@ def load_normalization_and_logdet(
 
 
 def log_score_z(z: ArrayLike, logdet: ArrayLike):
-    return (stats.norm.logpdf(z) + logdet)
+    return stats.norm.logpdf(z) + logdet

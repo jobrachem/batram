@@ -1,16 +1,16 @@
+import logging
 from pathlib import Path
-import numpy as np
-import liesel_ptm as ptm
+
+import click
 import jax
-import liesel.goose as gs
 import jax.numpy as jnp
-from liesel.goose.types import KeyArray, Array
+import liesel.goose as gs
+import liesel_ptm as ptm
+import numpy as np
 import pandas as pd
 import tensorflow_probability.substrates.jax.distributions as tfd
-import click
-import logging
+from liesel.goose.types import Array, KeyArray
 from liesel.logging import add_file_handler
-
 
 normal = tfd.Normal(loc=0.0, scale=1.0)
 
@@ -20,7 +20,6 @@ def draw_sample(
     shape: Array,
     nobs: int,
 ) -> pd.DataFrame:
-
     dg = ptm.PTMLocScaleDataGen(shape, loc_fn=lambda x: 3 * np.sin(x), ncov=1)
     sample = dg.sample(key=key, nobs=nobs)
     df = dg.to_df(sample)
@@ -82,7 +81,6 @@ def fit_loc_model(
     use_cache: bool,
     cache_filepath: str | Path = Path.cwd(),
 ) -> dict[str, Array]:
-
     graph = model.build_graph(optimize_start_values=False)
 
     stopper = ptm.Stopper(max_iter=10_000, patience=500, atol=0.001)
@@ -101,7 +99,11 @@ def fit_loc_model(
     eb.set_duration(
         warmup_duration=warmup_duration, posterior_duration=posterior_duration
     )
-    eb.positions_included += ["normalization_shape_transformed", "tau2_transformed", "omega_transformed"]
+    eb.positions_included += [
+        "normalization_shape_transformed",
+        "tau2_transformed",
+        "omega_transformed",
+    ]
     results = ptm.cache_results(eb, filename=cache_filepath, use_cache=use_cache)
     samples = results.get_posterior_samples()
     return samples
@@ -157,13 +159,21 @@ def fit_dist_model(
 
     eb = gs.EngineBuilder(seed=mcmc_seed, num_chains=4)
     eb = model.setup_engine_builder(eb=eb, graph=graph, sample_normalization=True)
-    eb.positions_included += ["scaled_normalization", "normalization_coef", "omega", "unscaled_normalization_and_deriv", "residuals", "normalization_shape"]
+    eb.positions_included += [
+        "scaled_normalization",
+        "normalization_coef",
+        "omega",
+        "unscaled_normalization_and_deriv",
+        "residuals",
+        "normalization_shape",
+    ]
     eb.set_duration(
         warmup_duration=warmup_duration, posterior_duration=posterior_duration
     )
     results = ptm.cache_results(eb, filename=cache_filepath, use_cache=use_cache)
     samples = results.get_posterior_samples()
     return samples
+
 
 def setup_combined_model(df: pd.DataFrame) -> ptm.PTMLocScale:
     model = ptm.PTMLocScale.from_nparam(
@@ -202,7 +212,14 @@ def fit_combined_model(
     eb.set_duration(
         warmup_duration=warmup_duration, posterior_duration=posterior_duration
     )
-    eb.positions_included += ["scaled_normalization", "normalization_coef", "omega", "unscaled_normalization_and_deriv", "residuals", "normalization_shape"]
+    eb.positions_included += [
+        "scaled_normalization",
+        "normalization_coef",
+        "omega",
+        "unscaled_normalization_and_deriv",
+        "residuals",
+        "normalization_shape",
+    ]
     results = ptm.cache_results(eb, filename=cache_filepath, use_cache=use_cache)
     samples = results.get_posterior_samples()
     return samples
@@ -234,7 +251,6 @@ def log_prob_loc_model_manual(
 def z_and_deriv(
     df: pd.DataFrame, model: ptm.PTMLocScale, samples: dict[str, Array]
 ) -> tuple[Array, Array]:
-
     pred = ptm.PTMLocScalePredictions(
         samples, model, y=df.y.to_numpy(), x0=df.x0.to_numpy()
     )
@@ -255,7 +271,6 @@ def score_combined_model(
     loc_samples: dict[str, Array],
     dist_samples: dict[str, Array],
 ) -> Array:
-
     samples = loc_samples.copy()
 
     samples["tau2_transformed"] = dist_samples["tau2_transformed"]
@@ -301,14 +316,16 @@ def run_one_simulation(
     warmup_duration: int = 1000,
     posterior_duration: int = 1000,
 ) -> dict[str, float | int]:
-    
     if cache_path is not None:
-        cache_path = Path(cache_path) / f"cache-data_seed_{data_seed}-shape_seed_{shape_seed}-n{nobs}"
+        cache_path = (
+            Path(cache_path)
+            / f"cache-data_seed_{data_seed}-shape_seed_{shape_seed}-n{nobs}"
+        )
         cache_path.mkdir(exist_ok=True, parents=True)
         cache = ptm.cache(cache_path)
     else:
         cache = identity_decorator
-    
+
     use_mcmc_cache = cache_path is not None
 
     if data_cache_path is not None:
@@ -334,7 +351,7 @@ def run_one_simulation(
         warmup_duration=warmup_duration,
         posterior_duration=posterior_duration,
         cache_filepath=cache_path / "loc_samples.pkl",
-        use_cache=use_mcmc_cache
+        use_cache=use_mcmc_cache,
     )
 
     eps_test, eps_test_deriv = z_and_deriv(test, model=loc_model, samples=loc_samples)
@@ -345,10 +362,16 @@ def run_one_simulation(
         train2, model=loc_model, samples=loc_samples
     )
 
-    loc_prob_test = log_prob_loc_model(test_df=test, model=loc_model, samples=loc_samples)
-    loc_prob_train1 = log_prob_loc_model(test_df=train1, model=loc_model, samples=loc_samples)
-    loc_prob_train2 = log_prob_loc_model(test_df=train2, model=loc_model, samples=loc_samples)
-    
+    loc_prob_test = log_prob_loc_model(
+        test_df=test, model=loc_model, samples=loc_samples
+    )
+    loc_prob_train1 = log_prob_loc_model(
+        test_df=train1, model=loc_model, samples=loc_samples
+    )
+    loc_prob_train2 = log_prob_loc_model(
+        test_df=train2, model=loc_model, samples=loc_samples
+    )
+
     combined_model = setup_combined_model(train1)
     combined_samples = fit_combined_model(
         combined_model,
@@ -356,7 +379,7 @@ def run_one_simulation(
         warmup_duration=warmup_duration,
         posterior_duration=posterior_duration,
         cache_filepath=cache_path / "combined_samples.pkl",
-        use_cache=use_mcmc_cache
+        use_cache=use_mcmc_cache,
     )
     combined_log_prob = log_prob_loc_model(
         test_df=test, model=combined_model, samples=combined_samples
@@ -369,10 +392,12 @@ def run_one_simulation(
         warmup_duration=warmup_duration,
         posterior_duration=posterior_duration,
         cache_filepath=cache_path / "combined_samples_full_train.pkl",
-        use_cache=use_mcmc_cache
+        use_cache=use_mcmc_cache,
     )
     combined_log_prob_full_train = log_prob_loc_model(
-        test_df=test, model=combined_model_full_train, samples=combined_samples_full_train
+        test_df=test,
+        model=combined_model_full_train,
+        samples=combined_samples_full_train,
     )
 
     dist_model_train1 = setup_dist_model(
@@ -384,7 +409,7 @@ def run_one_simulation(
         warmup_duration=warmup_duration,
         posterior_duration=posterior_duration,
         cache_filepath=cache_path / "dist_samples_train1.pkl",
-        use_cache=use_mcmc_cache
+        use_cache=use_mcmc_cache,
     )
 
     dist_model_train2 = setup_dist_model(
@@ -396,7 +421,7 @@ def run_one_simulation(
         warmup_duration=warmup_duration,
         posterior_duration=posterior_duration,
         cache_filepath=cache_path / "dist_samples_train2.pkl",
-        use_cache=use_mcmc_cache
+        use_cache=use_mcmc_cache,
     )
 
     dist_log_prob_test_trained_on_train1 = compute_dist_model_log_prob(
@@ -501,14 +526,18 @@ def run(data_seed, shape_seed, nobs, path):
     )
 
     logger = logging.getLogger("ttm_sim")
-    setup_logging(data_seed=data_seed, shape_seed=shape_seed, path=path / "logs", nobs=nobs)
+    setup_logging(
+        data_seed=data_seed, shape_seed=shape_seed, path=path / "logs", nobs=nobs
+    )
 
     if out_path.exists():
         logger.info(f"SKIPPING, because {out_path=} exists.")
         return
 
     logger.info(f"STARTING {data_seed=}, {shape_seed=}")
-    data = run_one_simulation(data_seed=data_seed, shape_seed=shape_seed, mcmc_seed=data_seed*10, nobs=nobs)
+    data = run_one_simulation(
+        data_seed=data_seed, shape_seed=shape_seed, mcmc_seed=data_seed * 10, nobs=nobs
+    )
 
     out_path.parent.mkdir(exist_ok=True, parents=True)
     pd.DataFrame(data, index=[0]).to_csv(out_path, index=False)
