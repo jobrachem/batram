@@ -1,5 +1,7 @@
+from __future__ import annotations
 from functools import partial
 from typing import Any
+
 
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -248,6 +250,8 @@ class Model:
     def __init__(self, y: Array, knots: Array, locs: Array) -> None:
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
+        self.knots = knots
+        self.nparam = D
 
         self.eta = eta_param(locs).update()
         self.delta = delta_param(locs, D, self.eta).update()
@@ -292,6 +296,11 @@ class Model:
             self.response_value, response_dist, name="response"
         ).update()
         """Response variable."""
+
+    @classmethod
+    def from_nparam(cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float) -> Model:
+        knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
+        return cls(y=y,  knots=knots, locs=locs)
 
     def build_graph(self):
         graph = lsl.GraphBuilder().add(self.response).build_model()

@@ -1,3 +1,3 @@
-from .node import Model
+from .node import Model, predict_normalization_and_deriv
 
-__all__ = ["Model"]
+__all__ = ["Model", "predict_normalization_and_deriv"]

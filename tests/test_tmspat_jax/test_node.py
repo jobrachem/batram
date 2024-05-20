@@ -3,6 +3,7 @@ from collections.abc import Iterator
 import jax.numpy as jnp
 import jax.random as jrd
 import liesel.model as lsl
+import liesel.goose.optim as optim
 import liesel_ptm as ptm
 import pytest
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
@@ -291,3 +292,41 @@ def test_predict_normalization():
 
     assert jnp.allclose(z, y, atol=1e-5)
     assert jnp.allclose(z_deriv, 1.0, atol=1e-5)
+
+
+def test_optim():
+    nloc = 1
+    nobs = 500
+    D = 15
+
+    locs = jrd.uniform(key, shape=(nloc, 2))
+    y = 2 * jrd.exponential(key, (nloc, nobs))
+
+    knots_lo = jnp.quantile(y, 0.01)
+    knots_hi = jnp.quantile(y, 0.99)
+    knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=D)
+
+    model = tm.Model(y[:, :300], knots=knots, locs=locs)
+    graph = model.build_graph()
+
+    params = [
+        model.alpha_param_name,
+        model.beta_param_name,
+        model.delta_param_name,
+        model.eta_param_name,
+    ]
+    hyperparams = (
+        model.alpha_hyperparam_names
+        + model.beta_hyperparam_names
+        + model.delta_hyperparam_names
+        + model.eta_hyperparam_names
+    )
+    optim_params = params + hyperparams
+    stopper = optim.Stopper(max_iter=1000, patience=10)
+    result = optim.optim_flat(graph, optim_params, stopper=stopper)
+    assert result.iteration == 1000
+
+    z_init, _ = tm.predict_normalization_and_deriv(graph, y, graph.state)
+    z_fit, _ = tm.predict_normalization_and_deriv(graph, y, result.model_state)
+
+    assert not jnp.allclose(z_init, z_fit, atol=1e-2)
