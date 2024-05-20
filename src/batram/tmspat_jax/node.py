@@ -353,11 +353,11 @@ class Model:
         return hyperparam_names
 
 
-def predict_normalization(graph: lsl.Model, y: Array, model_state: ModelState) -> Array:
+def predict_normalization_and_deriv(graph: lsl.Model, y: Array, model_state: ModelState) -> Array:
     """
     y: (Nloc, Nobs)
     """
     graph.state = model_state
     graph.nodes["response_value"].value = y
     graph.update()
-    return graph.vars["normalization"].value
+    return graph.vars["normalization"].value, graph.vars["normalization_deriv"].value

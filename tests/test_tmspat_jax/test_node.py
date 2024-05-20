@@ -284,7 +284,10 @@ def test_predict_normalization():
     model = tm.Model(y[:, :10], knots=knots, locs=locs)
     graph = model.build_graph()
 
-    z = tm.predict_normalization(graph, y, graph.state)
+    z, z_deriv = tm.predict_normalization_and_deriv(graph, y, graph.state)
 
     assert z.shape == (nloc, nobs)
+    assert z_deriv.shape == (nloc, nobs)
+
     assert jnp.allclose(z, y, atol=1e-5)
+    assert jnp.allclose(z_deriv, 1.0, atol=1e-5)
