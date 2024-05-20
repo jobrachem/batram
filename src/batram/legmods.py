@@ -3,7 +3,7 @@ import math
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import NamedTuple, cast, Any
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 import torch
@@ -1044,7 +1044,6 @@ class SimpleTM(torch.nn.Module):
         z = np.zeros(N)
         z_logdet = np.zeros(N)
 
-
         for i in range(x_fix.size(0), last_ind):
             # predictive distribution for current sample
             if i == 0:
@@ -1106,7 +1105,7 @@ class SimpleTM(torch.nn.Module):
                 )
 
         return z, z_logdet
-    
+
     def compute_quantities(self, obs, x_fix=torch.tensor([]), last_ind=None):
         if isinstance(last_ind, int) and last_ind < x_fix.size(-1):
             raise ValueError("last_ind must be larger than conditioned field x_fix.")
@@ -1152,7 +1151,6 @@ class SimpleTM(torch.nn.Module):
 
         z_tildes = np.zeros(N)
         z_tilde_logdet = np.zeros(N)
-
 
         for i in range(x_fix.size(0), last_ind):
             # predictive distribution for current sample
@@ -1226,9 +1224,9 @@ class SimpleTM(torch.nn.Module):
             z_tilde=z_tildes,
             z_tilde_logdet=z_tilde_logdet,
             mean=means,
-            scale=residual_scales
+            scale=residual_scales,
         )
-    
+
     def compute_quantities_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
         z = np.zeros_like(obs)
         z_logdet = np.zeros_like(obs)
@@ -1236,16 +1234,16 @@ class SimpleTM(torch.nn.Module):
         z_tilde_logdet = np.zeros_like(obs)
         mean = np.zeros_like(obs)
         scale = np.zeros_like(obs)
-        
-        for i in range(obs.shape[0]):
-            quant_i = self.compute_quantities(obs[i,:], x_fix, last_ind)
 
-            z[i,:] = quant_i.z
-            z_logdet[i,:] = quant_i.z_logdet
-            z_tilde[i,:] = quant_i.z_tilde
-            z_tilde_logdet[i,:] = quant_i.z_tilde_logdet
-            mean[i,:] = quant_i.mean
-            scale[i,:] = quant_i.scale
+        for i in range(obs.shape[0]):
+            quant_i = self.compute_quantities(obs[i, :], x_fix, last_ind)
+
+            z[i, :] = quant_i.z
+            z_logdet[i, :] = quant_i.z_logdet
+            z_tilde[i, :] = quant_i.z_tilde
+            z_tilde_logdet[i, :] = quant_i.z_tilde_logdet
+            mean[i, :] = quant_i.mean
+            scale[i, :] = quant_i.scale
 
         return TransportMapQuantities(
             z=z,
@@ -1253,9 +1251,8 @@ class SimpleTM(torch.nn.Module):
             z_tilde=z_tilde,
             z_tilde_logdet=z_tilde_logdet,
             mean=mean,
-            scale=scale
+            scale=scale,
         )
-    
 
     def compute_z_and_logdet_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
         z = np.zeros_like(obs)
