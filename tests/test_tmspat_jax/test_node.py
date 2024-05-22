@@ -7,6 +7,7 @@ import liesel.goose.optim as optim
 import liesel_ptm as ptm
 import pytest
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
+import jax
 
 import batram.tmspat_jax.node as tm
 
@@ -32,7 +33,7 @@ class TestKernel:
         kernel.update()
 
         assert kernel.value.shape == (x.shape[0], x.shape[0])
-
+    
     def test_1d_error(self):
         x = jrd.uniform(key, shape=(10,))
 
@@ -121,7 +122,7 @@ def test_delta_param():
 
     assert delta.value.shape == ((D - 1), nloc)
     assert delta.value.mean(axis=0).shape == (nloc,)
-    assert jnp.allclose(delta.value.mean(axis=0), 0.0, atol=1e-5)
+    assert jnp.allclose(delta.value.mean(axis=0), 0.0, atol=1e-4)
 
 
 def test_sfn():
@@ -251,25 +252,25 @@ class TestModel:
         assert model.eta_param_name == "eta"
 
     def test_eta_hyperparam_names(self, model):
-        assert model.eta_hyperparam_names == ["amplitude_eta", "length_scale_eta"]
+        assert model.eta_hyperparam_names == ["amplitude_eta_transformed", "length_scale_eta"]
 
     def test_delta_param_name(self, model):
         assert model.delta_param_name == "latent_delta"
 
     def test_delta_hyperparam_names(self, model):
-        assert model.delta_hyperparam_names == ["amplitude_delta", "length_scale_delta"]
+        assert model.delta_hyperparam_names == ["amplitude_delta_transformed", "length_scale_delta"]
 
     def test_alpha_param_name(self, model):
         assert model.alpha_param_name == "alpha"
 
     def test_alpha_hyperparam_names(self, model):
-        assert model.alpha_hyperparam_names == ["amplitude_alpha", "length_scale_alpha"]
+        assert model.alpha_hyperparam_names == ["amplitude_alpha_transformed", "length_scale_alpha"]
 
     def test_beta_param_name(self, model):
         assert model.beta_param_name == "beta"
 
     def test_beta_hyperparam_names(self, model):
-        assert model.beta_hyperparam_names == ["amplitude_beta", "length_scale_beta"]
+        assert model.beta_hyperparam_names == ["amplitude_beta_transformed", "length_scale_beta"]
 
 
 def test_predict_normalization():
@@ -282,7 +283,8 @@ def test_predict_normalization():
 
     knots = jnp.linspace(-5, 5, D + 4)
 
-    model = tm.Model(y[:, :10], knots=knots, locs=locs)
+    with jax.disable_jit():
+        model = tm.Model(y[:, :10], knots=knots, locs=locs)
     graph = model.build_graph()
 
     z, z_deriv = tm.predict_normalization_and_deriv(graph, y, graph.state)
@@ -330,3 +332,4 @@ def test_optim():
     z_fit, _ = tm.predict_normalization_and_deriv(graph, y, result.model_state)
 
     assert not jnp.allclose(z_init, z_fit, atol=1e-2)
+

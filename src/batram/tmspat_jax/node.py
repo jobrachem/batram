@@ -6,6 +6,7 @@ from typing import Any
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
+import jax
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
@@ -87,34 +88,44 @@ def delta_param(locs: Array, D: int, eta: lsl.Var) -> lsl.Var:
     """
 
     kernel_args = dict()
-    kernel_args["amplitude"] = lsl.param(value=1.0, name="amplitude_delta")
+
+    amplitude_transformed = lsl.Var(1.0, name="amplitude_delta_transformed")
+    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name="amplitude_delta")
+    kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name="length_scale_delta")
 
-    kernel = MultioutputKernelIMC(
-        x=locs,
-        W=jnp.eye(D - 2),
-        kernel_class=tfk.ExponentiatedQuadratic,
-        **kernel_args,
-        name="kernel_latent_delta",
-    )
 
     latent_delta = lsl.param(
         jnp.zeros((locs.shape[0] * (D - 2),)),
-        distribution=lsl.Dist(
-            tfd.MultivariateNormalFullCovariance, covariance_matrix=kernel
-        ),
+        distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
         name="latent_delta",
     )
 
+    kernel = Kernel(
+        x=locs, 
+        kernel_class=tfk.ExponentiatedQuadratic,
+        **kernel_args,
+        name="kernel_latent_delta"
+    )
+
+    def _L_fn(x):
+        augmented_x = x + jnp.diag(jnp.full(shape=(x.shape[0],), fill_value=1e-6))
+        return jnp.linalg.cholesky(augmented_x)
+
+    Linv = lsl.Var(lsl.Calc(_L_fn, kernel)).update()
+
     W = rw_weight_matrix(D)
     IN = jnp.eye(locs.shape[0])
+    ID = jnp.eye(W.shape[1])
 
-    def _compute_delta(latent_delta, eta):
-        delta_long = jnp.kron(W, jnp.exp(eta) * IN) @ latent_delta
+    def _compute_delta(latent_delta, eta, L):
+        Wkron = jnp.kron(W, jnp.exp(eta) * IN)
+        Lkron = jnp.kron(ID, L)
+        delta_long = Wkron @ Lkron @ latent_delta
         return jnp.reshape(delta_long, (D - 1, locs.shape[0]))
 
     delta = lsl.Var(
-        lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta), name="delta"
+        lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta, L=Linv), name="delta"
     )
 
     return delta
@@ -153,7 +164,9 @@ def alpha_param(locs: Array, knots: Array, name: str = "alpha") -> lsl.Var:
     Dimension: (Nloc,)
     """
     kernel_args = dict()
-    kernel_args["amplitude"] = lsl.param(value=1.0, name=f"amplitude_{name}")
+    amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
+    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}")
+    kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
         x=locs,
@@ -182,7 +195,9 @@ def beta_param(locs: Array, name: str = "beta") -> lsl.Var:
     Dimension: (Nloc,)
     """
     kernel_args = dict()
-    kernel_args["amplitude"] = lsl.param(value=1.0, name=f"amplitude_{name}")
+    amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
+    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}")
+    kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
         x=locs,
@@ -209,7 +224,9 @@ def eta_param(locs: Array, name: str = "eta") -> lsl.Var:
     Dimension: (Nloc,)
     """
     kernel_args = dict()
-    kernel_args["amplitude"] = lsl.param(value=1.0, name=f"amplitude_{name}")
+    amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
+    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}")
+    kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
         x=locs,
@@ -264,6 +281,7 @@ class Model:
         ).update()
 
         bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3)
+        
         basis_dot_and_deriv_fn = bspline.get_extrap_basis_dot_and_deriv_fn(
             target_slope=1.0
         )
@@ -313,11 +331,9 @@ class Model:
     @property
     def eta_hyperparam_names(self) -> list[str]:
         kernel_value = self.eta.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [
-            param_var_value.var.name
-            for param_var_value in kernel_value.kwinputs.values()
-        ]
-        return hyperparam_names
+        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
+        return [amplitude_name, length_scale_name]
 
     @property
     def delta_param_name(self) -> str:
@@ -325,13 +341,11 @@ class Model:
 
     @property
     def delta_hyperparam_names(self) -> list[str]:
-        latent_delta = self.delta.value_node.kwinputs["latent_delta"].var
-        kernel_value = latent_delta.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [
-            param_var_value.var.name
-            for param_var_value in kernel_value.kwinputs.values()
-        ]
-        return hyperparam_names
+        L = self.delta.value_node.kwinputs["L"]
+        kernel_value = L.var.value_node.inputs[0].var.value_node
+        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
+        return [amplitude_name, length_scale_name]
 
     @property
     def alpha_param_name(self) -> str:
@@ -341,11 +355,9 @@ class Model:
     def alpha_hyperparam_names(self) -> list[str]:
         alpha_var = self.alpha.value_node.inputs[0].var
         kernel_value = alpha_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [
-            param_var_value.var.name
-            for param_var_value in kernel_value.kwinputs.values()
-        ]
-        return hyperparam_names
+        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
+        return [amplitude_name, length_scale_name]
 
     @property
     def beta_param_name(self) -> str:
@@ -355,11 +367,9 @@ class Model:
     def beta_hyperparam_names(self) -> list[str]:
         beta_var = self.exp_beta.value_node.inputs[0].var
         kernel_value = beta_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        hyperparam_names = [
-            param_var_value.var.name
-            for param_var_value in kernel_value.kwinputs.values()
-        ]
-        return hyperparam_names
+        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
+        return [amplitude_name, length_scale_name]
 
 
 def predict_normalization_and_deriv(graph: lsl.Model, y: Array, model_state: ModelState) -> Array:
