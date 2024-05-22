@@ -115,13 +115,10 @@ def delta_param(locs: Array, D: int, eta: lsl.Var) -> lsl.Var:
     Linv = lsl.Var(lsl.Calc(_L_fn, kernel)).update()
 
     W = rw_weight_matrix(D)
-    IN = jnp.eye(locs.shape[0])
-    ID = jnp.eye(W.shape[1])
 
     def _compute_delta(latent_delta, eta, L):
-        Wkron = jnp.kron(W, jnp.exp(eta) * IN)
-        Lkron = jnp.kron(ID, L)
-        delta_long = Wkron @ Lkron @ latent_delta
+        Wkron = jnp.kron(W, jnp.exp(eta) * L)
+        delta_long = Wkron @ latent_delta
         return jnp.reshape(delta_long, (D - 1, locs.shape[0]))
 
     delta = lsl.Var(
