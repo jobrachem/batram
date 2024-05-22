@@ -187,6 +187,8 @@ class DeltaParam(lsl.Var):
             length_scale_transformed.name,
         ]
 
+        self.latent = latent_delta
+
 
 @partial(jnp.vectorize, excluded=[1], signature="(d)->()")
 def sfn(exp_shape, dknots: float | Array):
