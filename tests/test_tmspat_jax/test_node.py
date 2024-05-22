@@ -284,7 +284,7 @@ def test_predict_normalization():
     knots = jnp.linspace(-5, 5, D + 4)
 
     with jax.disable_jit():
-        model = tm.Model(y[:, :10], knots=knots, locs=locs)
+        model = tm.Model(y[:10, :], knots=knots, locs=locs)
     graph = model.build_graph()
 
     z, z_deriv = tm.predict_normalization_and_deriv(graph, y, graph.state)
@@ -308,7 +308,7 @@ def test_optim():
     knots_hi = jnp.quantile(y, 0.99)
     knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=D)
 
-    model = tm.Model(y[:, :300], knots=knots, locs=locs)
+    model = tm.Model(y[:300, :], knots=knots, locs=locs)
     graph = model.build_graph()
 
     params = [

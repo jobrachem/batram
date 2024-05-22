@@ -211,7 +211,7 @@ def model() -> Iterator[tm.Model]:
     D = 6
 
     locs = jrd.uniform(key, shape=(nloc, 2))
-    y = 2 * jrd.normal(key, (nloc, nobs))
+    y = 2 * jrd.normal(key, (nobs, nloc))
     knots = jnp.linspace(-5, 5, D + 4)
 
     model = tm.Model(y, knots=knots, locs=locs, K=K)
@@ -226,13 +226,13 @@ class TestModel:
         D = 6
 
         locs = jrd.uniform(key, shape=(nloc, 2))
-        y = 2 * jrd.normal(key, (nloc, nobs))
+        y = 2 * jrd.normal(key, (nobs, nloc))
 
         knots = jnp.linspace(-5, 5, D + 4)
 
         model = tm.Model(y, knots=knots, locs=locs, K=K)
 
-        assert model.normalization_and_deriv.value[0].shape == y.shape
+        assert model.normalization_and_deriv.value[0].T.shape == y.shape
 
         fyd = model.normalization_and_deriv.value[1]
         assert jnp.all(fyd > 0.0)
@@ -246,12 +246,12 @@ class TestModel:
         D = 6
 
         locs = jrd.uniform(key, shape=(nloc, 2))
-        y = 2 * jrd.normal(key, (nloc, nobs))
+        y = 2 * jrd.normal(key, (nobs, nloc))
 
         knots = jnp.linspace(-5, 5, D + 4)
 
         model = tm.Model(y, knots=knots, locs=locs, K=K)
-        assert model.response.log_prob.shape == (nloc, nobs)
+        assert model.response.log_prob.shape == (nobs, nloc)
 
         assert jnp.allclose(
             model.refdist.log_prob(y), model.response.log_prob, atol=1e-5
@@ -301,18 +301,18 @@ def test_predict_normalization():
     K = 5
 
     locs = jrd.uniform(key, shape=(nloc, 2))
-    y = 2 * jrd.normal(key, (nloc, nobs))
+    y = 2 * jrd.normal(key, (nobs, nloc))
 
     knots = jnp.linspace(-5, 5, D + 4)
 
     with jax.disable_jit():
-        model = tm.Model(y[:, :10], knots=knots, locs=locs, K=K)
+        model = tm.Model(y[:10, :], knots=knots, locs=locs, K=K)
     graph = model.build_graph()
 
     z, z_deriv = tm.predict_normalization_and_deriv(graph, y, graph.state)
 
-    assert z.shape == (nloc, nobs)
-    assert z_deriv.shape == (nloc, nobs)
+    assert z.shape == (nobs, nloc)
+    assert z_deriv.shape == (nobs, nloc)
 
     assert jnp.allclose(z, y, atol=1e-5)
     assert jnp.allclose(z_deriv, 1.0, atol=1e-5)
@@ -324,13 +324,13 @@ def test_optim():
     D = 15
 
     locs = jrd.uniform(key, shape=(nloc, 2))
-    y = 2 * jrd.exponential(key, (nloc, nobs))
+    y = 2 * jrd.exponential(key, (nobs, nloc))
 
     knots_lo = jnp.quantile(y, 0.01)
     knots_hi = jnp.quantile(y, 0.99)
     knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=D)
 
-    model = tm.Model(y[:, :300], knots=knots, locs=locs, K=1)
+    model = tm.Model(y[:300, :], knots=knots, locs=locs, K=1)
     graph = model.build_graph()
 
     params = (

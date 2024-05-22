@@ -439,19 +439,19 @@ class Model:
             target_slope=1.0
         )
 
-        self.response_value = lsl.Data(y, _name="response_value")
+        self.response_value = lsl.obs(y, name="response_hidden_value")
 
         self.normalization_and_deriv = lsl.Var(
-            lsl.Calc(basis_dot_and_deriv_fn, self.response_value, self.coef),
+            lsl.Calc(lambda y, c: basis_dot_and_deriv_fn(y.T, c), self.response_value, self.coef),
             name="normalization_and_deriv",
         ).update()
 
         self.normalization = lsl.Var(
-            lsl.Calc(lambda x: x[0], self.normalization_and_deriv), name="normalization"
+            lsl.Calc(lambda x: x[0].T, self.normalization_and_deriv), name="normalization"
         ).update()
 
         self.normalization_deriv = lsl.Var(
-            lsl.Calc(lambda x: x[1], self.normalization_and_deriv),
+            lsl.Calc(lambda x: x[1].T, self.normalization_and_deriv),
             name="normalization_deriv",
         ).update()
 
@@ -464,7 +464,7 @@ class Model:
             self.normalization, self.normalization_deriv, refdist=self.refdist
         )
         self.response = lsl.obs(
-            self.response_value, response_dist, name="response"
+            y, response_dist, name="response"
         ).update()
         """Response variable."""
 
@@ -487,6 +487,6 @@ def predict_normalization_and_deriv(
     y: (Nloc, Nobs)
     """
     graph.state = model_state
-    graph.nodes["response_value"].value = y
+    graph.vars["response_hidden_value"].value = y
     graph.update()
     return graph.vars["normalization"].value, graph.vars["normalization_deriv"].value
