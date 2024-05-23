@@ -261,7 +261,7 @@ def trafo_coef(alpha: lsl.Var, exp_beta: lsl.Var, shape_coef: lsl.Var) -> lsl.Va
 
 
 class Model:
-    def __init__(self, y: Array, knots: Array, locs: Array, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
+    def __init__(self, y: Array, knots: Array, locs: Array, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic, extrap_transition_width: float = 0.3) -> None:
         """
         kernel_class must take the arguments ``amplitude`` and ``length_scale``.
         """
@@ -280,7 +280,7 @@ class Model:
             self.alpha, self.exp_beta, self.cumsum_exp_delta
         ).update()
 
-        self.bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3)
+        self.bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3, eps=extrap_transition_width)
         
         basis_dot_and_deriv_fn = self.bspline.get_extrap_basis_dot_and_deriv_fn(
             target_slope=1.0
@@ -316,9 +316,9 @@ class Model:
         """Response variable."""
 
     @classmethod
-    def from_nparam(cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> Model:
+    def from_nparam(cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic, extrap_transition_width: float = 0.3) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
-        return cls(y=y,  knots=knots, locs=locs, kernel_class=kernel_class)
+        return cls(y=y,  knots=knots, locs=locs, kernel_class=kernel_class, extrap_transition_width=extrap_transition_width)
 
     def build_graph(self):
         graph = lsl.GraphBuilder().add(self.response).build_model()
