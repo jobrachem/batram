@@ -113,7 +113,7 @@ def rw_weight_matrix(D: int):
 
 
 class DeltaParam(lsl.Var):
-    def __init__(self, locs: Array, D: int, eta: lsl.Var, K: int):
+    def __init__(self, locs: Array, D: int, eta: lsl.Var, K: int, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic):
         kernel_args = dict()
 
         amplitude_transformed = lsl.param(0.5, name="amplitude_delta_transformed")
@@ -138,7 +138,7 @@ class DeltaParam(lsl.Var):
 
         kernel_uu = Kernel(
             x=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name="kernel_latent_delta",
         )
@@ -146,7 +146,7 @@ class DeltaParam(lsl.Var):
         kernel_du = Kernel2(
             x1=locs[K:, :],
             x2=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name="kernel_latent_delta_u",
         )
@@ -220,7 +220,7 @@ class ShapeCoef(lsl.Var):
 
 
 class AlphaParam(lsl.Var):
-    def __init__(self, locs: Array, knots: Array, K: int, name: str = "alpha") -> None:
+    def __init__(self, locs: Array, knots: Array, K: int, name: str = "alpha", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
         kernel_args = dict()
 
         amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
@@ -240,7 +240,7 @@ class AlphaParam(lsl.Var):
         kernel_args["length_scale"] = length_scale
         kernel_uu = Kernel(
             x=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_{name}",
         )
@@ -248,7 +248,7 @@ class AlphaParam(lsl.Var):
         kernel_du = Kernel2(
             x1=locs[K:, :],
             x2=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_latent_{name}_u",
         )
@@ -282,7 +282,7 @@ class AlphaParam(lsl.Var):
 
 
 class ExpBetaParam(lsl.Var):
-    def __init__(self, locs: Array, K: int, name: str = "beta") -> None:
+    def __init__(self, locs: Array, K: int, name: str = "beta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
         kernel_args = dict()
         amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
         amplitude = lsl.Var(
@@ -300,7 +300,7 @@ class ExpBetaParam(lsl.Var):
 
         kernel_uu = Kernel(
             x=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_{name}",
         )
@@ -308,7 +308,7 @@ class ExpBetaParam(lsl.Var):
         kernel_du = Kernel2(
             x1=locs[K:, :],
             x2=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_latent_{name}_u",
         )
@@ -341,7 +341,7 @@ class ExpBetaParam(lsl.Var):
 
 
 class EtaParam(lsl.Var):
-    def __init__(self, locs: Array, K: int, name: str = "eta") -> None:
+    def __init__(self, locs: Array, K: int, name: str = "eta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
         kernel_args = dict()
         amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
         amplitude = lsl.Var(
@@ -359,7 +359,7 @@ class EtaParam(lsl.Var):
 
         kernel_uu = Kernel(
             x=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_{name}",
         )
@@ -367,7 +367,7 @@ class EtaParam(lsl.Var):
         kernel_du = Kernel2(
             x1=locs[K:, :],
             x2=locs[:K, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_latent_{name}_u",
         )
@@ -417,17 +417,17 @@ class TransformationCoef(lsl.Var):
 
 
 class Model:
-    def __init__(self, y: Array, knots: Array, locs: Array, K: int) -> None:
+    def __init__(self, y: Array, knots: Array, locs: Array, K: int, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
         self.knots = knots
         self.nparam = D
 
-        self.eta = EtaParam(locs, K=K).update()
-        self.delta = DeltaParam(locs, D, self.eta, K=K).update()
+        self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
+        self.delta = DeltaParam(locs, D, self.eta, K=K, kernel_class=kernel_class).update()
         self.cumsum_exp_delta = ShapeCoef(self.delta, dknots).update()
-        self.exp_beta = ExpBetaParam(locs, K=K).update()
-        self.alpha = AlphaParam(locs, knots, K=K).update()
+        self.exp_beta = ExpBetaParam(locs, K=K, kernel_class=kernel_class).update()
+        self.alpha = AlphaParam(locs, knots, K=K, kernel_class=kernel_class).update()
 
         self.coef = TransformationCoef(
             self.alpha, self.exp_beta, self.cumsum_exp_delta
