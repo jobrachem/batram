@@ -82,7 +82,7 @@ def rw_weight_matrix(D: int):
     return W
 
 
-def delta_param(locs: Array, D: int, eta: lsl.Var) -> lsl.Var:
+def delta_param(locs: Array, D: int, eta: lsl.Var, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
     """
     Dimension: (D-1, Nloc)
     """
@@ -103,7 +103,7 @@ def delta_param(locs: Array, D: int, eta: lsl.Var) -> lsl.Var:
 
     kernel = Kernel(
         x=locs, 
-        kernel_class=tfk.ExponentiatedQuadratic,
+        kernel_class=kernel_class,
         **kernel_args,
         name="kernel_latent_delta"
     )
@@ -156,7 +156,7 @@ def shape_coef(delta: lsl.Var, dknots: float | Array) -> lsl.Var:
     return shape_coef
 
 
-def alpha_param(locs: Array, knots: Array, name: str = "alpha") -> lsl.Var:
+def alpha_param(locs: Array, knots: Array, name: str = "alpha", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
     """
     Dimension: (Nloc,)
     """
@@ -167,7 +167,7 @@ def alpha_param(locs: Array, knots: Array, name: str = "alpha") -> lsl.Var:
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
         x=locs,
-        kernel_class=tfk.ExponentiatedQuadratic,
+        kernel_class=kernel_class,
         **kernel_args,
         name=f"kernel_{name}",
     )
@@ -187,7 +187,7 @@ def alpha_param(locs: Array, knots: Array, name: str = "alpha") -> lsl.Var:
     return locshift
 
 
-def beta_param(locs: Array, name: str = "beta") -> lsl.Var:
+def beta_param(locs: Array, name: str = "beta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
     """
     Dimension: (Nloc,)
     """
@@ -198,7 +198,7 @@ def beta_param(locs: Array, name: str = "beta") -> lsl.Var:
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
         x=locs,
-        kernel_class=tfk.ExponentiatedQuadratic,
+        kernel_class=kernel_class,
         **kernel_args,
         name=f"kernel_{name}",
     )
@@ -216,7 +216,7 @@ def beta_param(locs: Array, name: str = "beta") -> lsl.Var:
     return exp_beta
 
 
-def eta_param(locs: Array, name: str = "eta") -> lsl.Var:
+def eta_param(locs: Array, name: str = "eta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
     """
     Dimension: (Nloc,)
     """
@@ -227,7 +227,7 @@ def eta_param(locs: Array, name: str = "eta") -> lsl.Var:
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
         x=locs,
-        kernel_class=tfk.ExponentiatedQuadratic,
+        kernel_class=kernel_class,
         **kernel_args,
         name=f"kernel_{name}",
     )
@@ -261,25 +261,28 @@ def trafo_coef(alpha: lsl.Var, exp_beta: lsl.Var, shape_coef: lsl.Var) -> lsl.Va
 
 
 class Model:
-    def __init__(self, y: Array, knots: Array, locs: Array) -> None:
+    def __init__(self, y: Array, knots: Array, locs: Array, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
+        """
+        kernel_class must take the arguments ``amplitude`` and ``length_scale``.
+        """
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
         self.knots = knots
         self.nparam = D
 
-        self.eta = eta_param(locs).update()
-        self.delta = delta_param(locs, D, self.eta).update()
+        self.eta = eta_param(locs, kernel_class=kernel_class).update()
+        self.delta = delta_param(locs, D, self.eta, kernel_class=kernel_class).update()
         self.cumsum_exp_delta = shape_coef(self.delta, dknots).update()
-        self.exp_beta = beta_param(locs).update()
-        self.alpha = alpha_param(locs, knots).update()
+        self.exp_beta = beta_param(locs, kernel_class=kernel_class).update()
+        self.alpha = alpha_param(locs, knots, kernel_class=kernel_class).update()
 
         self.coef = trafo_coef(
             self.alpha, self.exp_beta, self.cumsum_exp_delta
         ).update()
 
-        bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3)
+        self.bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3)
         
-        basis_dot_and_deriv_fn = bspline.get_extrap_basis_dot_and_deriv_fn(
+        basis_dot_and_deriv_fn = self.bspline.get_extrap_basis_dot_and_deriv_fn(
             target_slope=1.0
         )
 
