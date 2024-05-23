@@ -433,9 +433,9 @@ class Model:
             self.alpha, self.exp_beta, self.cumsum_exp_delta
         ).update()
 
-        bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3)
+        self.bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3)
 
-        basis_dot_and_deriv_fn = bspline.get_extrap_basis_dot_and_deriv_fn(
+        basis_dot_and_deriv_fn = self.bspline.get_extrap_basis_dot_and_deriv_fn(
             target_slope=1.0
         )
 
@@ -470,10 +470,10 @@ class Model:
 
     @classmethod
     def from_nparam(
-        cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float
+        cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, K: int
     ) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
-        return cls(y=y, knots=knots, locs=locs)
+        return cls(y=y, knots=knots, locs=locs, K=K)
 
     def build_graph(self):
         graph = lsl.GraphBuilder().add(self.response).build_model()
