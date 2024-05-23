@@ -470,10 +470,10 @@ class Model:
 
     @classmethod
     def from_nparam(
-        cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, K: int
+        cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, K: int, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic
     ) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
-        return cls(y=y, knots=knots, locs=locs, K=K)
+        return cls(y=y, knots=knots, locs=locs, K=K, kernel_class=kernel_class)
 
     def build_graph(self):
         graph = lsl.GraphBuilder().add(self.response).build_model()
