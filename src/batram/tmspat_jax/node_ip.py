@@ -373,7 +373,7 @@ class EtaParam(lsl.Var):
         )
 
         latent = lsl.param(
-            jnp.zeros((K,)),
+            jnp.zeros((K,))-1.0,
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"latent_{name}",
         )
