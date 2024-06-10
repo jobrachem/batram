@@ -408,12 +408,14 @@ class EtaParam(lsl.Var):
         )
 
         latent = lsl.param(
-            jnp.zeros((K,)) - 1.0,
+            jnp.zeros((K,)),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"latent_{name}",
         )
 
-        def _compute_param(latent, Kuu, Kdu):
+        mean = lsl.param(-1.0, name=f"{name}_mean")
+
+        def _compute_param(latent, Kuu, Kdu, mean):
             salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
@@ -421,10 +423,10 @@ class EtaParam(lsl.Var):
 
             u = L @ latent
             var = Kdu @ Li.T @ latent
-            return jnp.r_[u, var]
+            return jnp.r_[u, var] + mean
 
         super().__init__(
-            lsl.Calc(_compute_param, latent, kernel_uu, kernel_du),
+            lsl.Calc(_compute_param, latent, kernel_uu, kernel_du, mean),
             name=f"{name}",
         )
 
@@ -432,7 +434,21 @@ class EtaParam(lsl.Var):
         self.hyperparameter_names = [
             amplitude_transformed.name,
             length_scale_transformed.name,
+            mean.name
         ]
+
+
+class EtaParamFixed(lsl.Var):
+    def __init__(
+        self,
+        name: str = "eta",
+    ) -> None:
+        super().__init__(
+            value=0.0,
+            name=name,
+        )
+        self.parameter_names = []
+        self.hyperparameter_names = []
 
 
 class TransformationCoef(lsl.Var):
@@ -462,13 +478,16 @@ class Model:
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
         extrap_transition_width: float = 0.3,
+        eta_fixed: bool = False
     ) -> None:
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
         self.knots = knots
         self.nparam = D
-
-        self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
+        if eta_fixed:
+            self.eta = EtaParamFixed()
+        else:
+            self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
         self.delta = DeltaParam(
             locs, D, self.eta, K=K, kernel_class=kernel_class
         ).update()
@@ -534,6 +553,7 @@ class Model:
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
         extrap_transition_width: float = 0.3,
+        eta_fixed: bool = False
     ) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
         return cls(
@@ -543,6 +563,7 @@ class Model:
             K=K,
             kernel_class=kernel_class,
             extrap_transition_width=extrap_transition_width,
+            eta_fixed=eta_fixed
         )
 
     def build_graph(self):
