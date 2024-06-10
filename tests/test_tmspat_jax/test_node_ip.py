@@ -1,13 +1,13 @@
 from collections.abc import Iterator
 
+import jax
 import jax.numpy as jnp
 import jax.random as jrd
-import liesel.model as lsl
 import liesel.goose.optim as optim
+import liesel.model as lsl
 import liesel_ptm as ptm
 import pytest
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
-import jax
 
 import batram.tmspat_jax.node_ip as tm
 
@@ -185,7 +185,6 @@ def test_validate_shape_coef():
 
 def test_alpha_param():
     nloc = 15
-    K = 5
     locs = jrd.uniform(key, shape=(nloc, 2))
 
     alpha_plus_a = tm.AlphaParam(locs, knots=jnp.arange(10), K=5)
@@ -316,6 +315,57 @@ def test_predict_normalization():
 
     assert jnp.allclose(z, y, atol=1e-5)
     assert jnp.allclose(z_deriv, 1.0, atol=1e-5)
+
+
+def test_predict_normalization_inverse():
+    nloc = 15
+    nobs = 50
+    D = 6
+    K = 5
+
+    locs = jrd.uniform(key, shape=(nloc, 2))
+    y = 2 * jrd.normal(key, (nobs, nloc))
+
+    knots = jnp.linspace(-5, 5, D + 4)
+
+    model = tm.Model(y[:10, :], knots=knots, locs=locs, K=K)
+    graph = model.build_graph()
+
+    z, _ = tm.predict_normalization_and_deriv(graph, y, graph.state)
+
+    y_new = tm.predict_normalization_inverse(z, coef=model.coef.value, model=model)
+
+    assert jnp.allclose(z, y_new, atol=1e-5)
+
+
+def test_predict_normalization_inverse_nonlinear():
+    nloc = 15
+    nobs = 50
+    D = 6
+    K = 5
+
+    locs = jrd.uniform(key, shape=(nloc, 2))
+    y = 2 * jrd.normal(key, (nobs, nloc))
+
+    knots = jnp.linspace(-5, 5, D + 4)
+
+    model = tm.Model(y[:10, :], knots=knots, locs=locs, K=K)
+    graph = model.build_graph()
+
+    z_linear, _ = tm.predict_normalization_and_deriv(graph, y, graph.state)
+
+    latent_delta_shape = graph.vars["latent_delta"].value.shape
+    new_delta = jax.random.normal(key=jax.random.PRNGKey(42), shape=latent_delta_shape)
+    graph.vars["latent_delta"].value = new_delta
+    graph.update()
+
+    z, _ = tm.predict_normalization_and_deriv(graph, y, graph.state)
+
+    assert not jnp.allclose(z, z_linear, atol=1e-4)
+    assert not jnp.allclose(y, z, atol=1e-1)
+
+    y_new = tm.predict_normalization_inverse(z, coef=model.coef.value, model=model)
+    assert jnp.allclose(y, y_new, atol=1e-3)
 
 
 def test_optim():
