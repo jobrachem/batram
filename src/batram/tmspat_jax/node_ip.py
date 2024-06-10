@@ -3,17 +3,18 @@ Nodes for inducing points version.
 """
 
 from __future__ import annotations
+
 from functools import partial
 from typing import Any
 
-
+import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
-import jax
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
+from liesel_ptm.ptm_ls import NormalizationFn
 
 Array = Any
 
@@ -113,7 +114,16 @@ def rw_weight_matrix(D: int):
 
 
 class DeltaParam(lsl.Var):
-    def __init__(self, locs: Array, D: int, eta: lsl.Var, K: int, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic):
+    def __init__(
+        self,
+        locs: Array,
+        D: int,
+        eta: lsl.Var,
+        K: int,
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+    ):
         kernel_args = dict()
 
         amplitude_transformed = lsl.param(0.5, name="amplitude_delta_transformed")
@@ -220,7 +230,16 @@ class ShapeCoef(lsl.Var):
 
 
 class AlphaParam(lsl.Var):
-    def __init__(self, locs: Array, knots: Array, K: int, name: str = "alpha", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
+    def __init__(
+        self,
+        locs: Array,
+        knots: Array,
+        K: int,
+        name: str = "alpha",
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+    ) -> None:
         kernel_args = dict()
 
         amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
@@ -282,7 +301,15 @@ class AlphaParam(lsl.Var):
 
 
 class ExpBetaParam(lsl.Var):
-    def __init__(self, locs: Array, K: int, name: str = "beta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
+    def __init__(
+        self,
+        locs: Array,
+        K: int,
+        name: str = "beta",
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+    ) -> None:
         kernel_args = dict()
         amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
         amplitude = lsl.Var(
@@ -341,7 +368,15 @@ class ExpBetaParam(lsl.Var):
 
 
 class EtaParam(lsl.Var):
-    def __init__(self, locs: Array, K: int, name: str = "eta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> None:
+    def __init__(
+        self,
+        locs: Array,
+        K: int,
+        name: str = "eta",
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+    ) -> None:
         kernel_args = dict()
         amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
         amplitude = lsl.Var(
@@ -373,7 +408,7 @@ class EtaParam(lsl.Var):
         )
 
         latent = lsl.param(
-            jnp.zeros((K,))-1.0,
+            jnp.zeros((K,)) - 1.0,
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"latent_{name}",
         )
@@ -417,14 +452,26 @@ class TransformationCoef(lsl.Var):
 
 
 class Model:
-    def __init__(self, y: Array, knots: Array, locs: Array, K: int, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic, extrap_transition_width: float = 0.3) -> None:
+    def __init__(
+        self,
+        y: Array,
+        knots: Array,
+        locs: Array,
+        K: int,
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+        extrap_transition_width: float = 0.3,
+    ) -> None:
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
         self.knots = knots
         self.nparam = D
 
         self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
-        self.delta = DeltaParam(locs, D, self.eta, K=K, kernel_class=kernel_class).update()
+        self.delta = DeltaParam(
+            locs, D, self.eta, K=K, kernel_class=kernel_class
+        ).update()
         self.cumsum_exp_delta = ShapeCoef(self.delta, dknots).update()
         self.exp_beta = ExpBetaParam(locs, K=K, kernel_class=kernel_class).update()
         self.alpha = AlphaParam(locs, knots, K=K, kernel_class=kernel_class).update()
@@ -433,7 +480,10 @@ class Model:
             self.alpha, self.exp_beta, self.cumsum_exp_delta
         ).update()
 
-        self.bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3, eps=extrap_transition_width)
+        self.extrap_transition_width = extrap_transition_width
+        self.bspline = ptm.ExtrapBSplineApprox(
+            knots=knots, order=3, eps=extrap_transition_width
+        )
 
         basis_dot_and_deriv_fn = self.bspline.get_extrap_basis_dot_and_deriv_fn(
             target_slope=1.0
@@ -442,12 +492,17 @@ class Model:
         self.response_value = lsl.obs(y, name="response_hidden_value")
 
         self.normalization_and_deriv = lsl.Var(
-            lsl.Calc(lambda y, c: basis_dot_and_deriv_fn(y.T, c), self.response_value, self.coef),
+            lsl.Calc(
+                lambda y, c: basis_dot_and_deriv_fn(y.T, c),
+                self.response_value,
+                self.coef,
+            ),
             name="normalization_and_deriv",
         ).update()
 
         self.normalization = lsl.Var(
-            lsl.Calc(lambda x: x[0].T, self.normalization_and_deriv), name="normalization"
+            lsl.Calc(lambda x: x[0].T, self.normalization_and_deriv),
+            name="normalization",
         ).update()
 
         self.normalization_deriv = lsl.Var(
@@ -463,17 +518,32 @@ class Model:
         response_dist = ptm.TransformationDist(
             self.normalization, self.normalization_deriv, refdist=self.refdist
         )
-        self.response = lsl.obs(
-            y, response_dist, name="response"
-        ).update()
+        self.response = lsl.obs(y, response_dist, name="response").update()
         """Response variable."""
 
     @classmethod
     def from_nparam(
-        cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, K: int, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic, extrap_transition_width: float = 0.3
+        cls,
+        y: Array,
+        locs: Array,
+        nparam: int,
+        knots_lo: float,
+        knots_hi: float,
+        K: int,
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+        extrap_transition_width: float = 0.3,
     ) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
-        return cls(y=y, knots=knots, locs=locs, K=K, kernel_class=kernel_class, extrap_transition_width=extrap_transition_width)
+        return cls(
+            y=y,
+            knots=knots,
+            locs=locs,
+            K=K,
+            kernel_class=kernel_class,
+            extrap_transition_width=extrap_transition_width,
+        )
 
     def build_graph(self):
         graph = lsl.GraphBuilder().add(self.response).build_model()
@@ -490,3 +560,15 @@ def predict_normalization_and_deriv(
     graph.vars["response_hidden_value"].value = y
     graph.update()
     return graph.vars["normalization"].value, graph.vars["normalization_deriv"].value
+
+
+def predict_normalization_inverse(
+    z: Array, coef: Array, model: Model, ngrid: int = 200
+):
+    hfn = NormalizationFn(
+        knots=model.knots, order=3, transition_width=model.extrap_transition_width
+    )
+
+    return hfn.inverse(
+        z=z.T, coef=coef, norm_mean=jnp.zeros(1), norm_sd=jnp.ones(1), ngrid=ngrid
+    ).T
