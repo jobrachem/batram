@@ -1,12 +1,12 @@
 from __future__ import annotations
+
 from functools import partial
 from typing import Any
 
-
+import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
-import jax
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
@@ -82,7 +82,12 @@ def rw_weight_matrix(D: int):
     return W
 
 
-def delta_param(locs: Array, D: int, eta: lsl.Var, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
+def delta_param(
+    locs: Array,
+    D: int,
+    eta: lsl.Var,
+    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
+) -> lsl.Var:
     """
     Dimension: (D-1, Nloc)
     """
@@ -90,10 +95,11 @@ def delta_param(locs: Array, D: int, eta: lsl.Var, kernel_class: type[tfk.AutoCo
     kernel_args = dict()
 
     amplitude_transformed = lsl.Var(1.0, name="amplitude_delta_transformed")
-    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name="amplitude_delta")
+    amplitude = lsl.Var(
+        lsl.Calc(jax.nn.softplus, amplitude_transformed), name="amplitude_delta"
+    )
     kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name="length_scale_delta")
-
 
     latent_delta = lsl.param(
         jnp.zeros((locs.shape[0] * (D - 2),)),
@@ -102,10 +108,7 @@ def delta_param(locs: Array, D: int, eta: lsl.Var, kernel_class: type[tfk.AutoCo
     )
 
     kernel = Kernel(
-        x=locs, 
-        kernel_class=kernel_class,
-        **kernel_args,
-        name="kernel_latent_delta"
+        x=locs, kernel_class=kernel_class, **kernel_args, name="kernel_latent_delta"
     )
 
     def _L_fn(x):
@@ -122,7 +125,8 @@ def delta_param(locs: Array, D: int, eta: lsl.Var, kernel_class: type[tfk.AutoCo
         return jnp.reshape(delta_long, (D - 1, locs.shape[0]))
 
     delta = lsl.Var(
-        lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta, L=Linv), name="delta"
+        lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta, L=Linv),
+        name="delta",
     )
 
     return delta
@@ -156,13 +160,20 @@ def shape_coef(delta: lsl.Var, dknots: float | Array) -> lsl.Var:
     return shape_coef
 
 
-def alpha_param(locs: Array, knots: Array, name: str = "alpha", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
+def alpha_param(
+    locs: Array,
+    knots: Array,
+    name: str = "alpha",
+    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
+) -> lsl.Var:
     """
     Dimension: (Nloc,)
     """
     kernel_args = dict()
     amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
-    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}")
+    amplitude = lsl.Var(
+        lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
+    )
     kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
@@ -187,13 +198,19 @@ def alpha_param(locs: Array, knots: Array, name: str = "alpha", kernel_class: ty
     return locshift
 
 
-def beta_param(locs: Array, name: str = "beta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
+def beta_param(
+    locs: Array,
+    name: str = "beta",
+    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
+) -> lsl.Var:
     """
     Dimension: (Nloc,)
     """
     kernel_args = dict()
     amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
-    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}")
+    amplitude = lsl.Var(
+        lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
+    )
     kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
@@ -216,13 +233,19 @@ def beta_param(locs: Array, name: str = "beta", kernel_class: type[tfk.AutoCompo
     return exp_beta
 
 
-def eta_param(locs: Array, name: str = "eta", kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic) -> lsl.Var:
+def eta_param(
+    locs: Array,
+    name: str = "eta",
+    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
+) -> lsl.Var:
     """
     Dimension: (Nloc,)
     """
     kernel_args = dict()
     amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
-    amplitude = lsl.Var(lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}")
+    amplitude = lsl.Var(
+        lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
+    )
     kernel_args["amplitude"] = amplitude
     kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
     kernel = Kernel(
@@ -261,7 +284,16 @@ def trafo_coef(alpha: lsl.Var, exp_beta: lsl.Var, shape_coef: lsl.Var) -> lsl.Va
 
 
 class Model:
-    def __init__(self, y: Array, knots: Array, locs: Array, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic, extrap_transition_width: float = 0.3) -> None:
+    def __init__(
+        self,
+        y: Array,
+        knots: Array,
+        locs: Array,
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+        extrap_transition_width: float = 0.3,
+    ) -> None:
         """
         kernel_class must take the arguments ``amplitude`` and ``length_scale``.
         """
@@ -280,8 +312,10 @@ class Model:
             self.alpha, self.exp_beta, self.cumsum_exp_delta
         ).update()
 
-        self.bspline = ptm.ExtrapBSplineApprox(knots=knots, order=3, eps=extrap_transition_width)
-        
+        self.bspline = ptm.ExtrapBSplineApprox(
+            knots=knots, order=3, eps=extrap_transition_width
+        )
+
         basis_dot_and_deriv_fn = self.bspline.get_extrap_basis_dot_and_deriv_fn(
             target_slope=1.0
         )
@@ -289,12 +323,17 @@ class Model:
         self.response_value = lsl.obs(y, name="response_hidden_value")
 
         self.normalization_and_deriv = lsl.Var(
-            lsl.Calc(lambda y, c: basis_dot_and_deriv_fn(y.T, c), self.response_value, self.coef),
+            lsl.Calc(
+                lambda y, c: basis_dot_and_deriv_fn(y.T, c),
+                self.response_value,
+                self.coef,
+            ),
             name="normalization_and_deriv",
         ).update()
 
         self.normalization = lsl.Var(
-            lsl.Calc(lambda x: x[0].T, self.normalization_and_deriv), name="normalization"
+            lsl.Calc(lambda x: x[0].T, self.normalization_and_deriv),
+            name="normalization",
         ).update()
 
         self.normalization_deriv = lsl.Var(
@@ -310,15 +349,30 @@ class Model:
         response_dist = ptm.TransformationDist(
             self.normalization, self.normalization_deriv, refdist=self.refdist
         )
-        self.response = lsl.obs(
-            y, response_dist, name="response"
-        ).update()
+        self.response = lsl.obs(y, response_dist, name="response").update()
         """Response variable."""
 
     @classmethod
-    def from_nparam(cls, y: Array, locs: Array, nparam: int, knots_lo: float, knots_hi: float, kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic, extrap_transition_width: float = 0.3) -> Model:
+    def from_nparam(
+        cls,
+        y: Array,
+        locs: Array,
+        nparam: int,
+        knots_lo: float,
+        knots_hi: float,
+        kernel_class: type[
+            tfk.AutoCompositeTensorPsdKernel
+        ] = tfk.ExponentiatedQuadratic,
+        extrap_transition_width: float = 0.3,
+    ) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
-        return cls(y=y,  knots=knots, locs=locs, kernel_class=kernel_class, extrap_transition_width=extrap_transition_width)
+        return cls(
+            y=y,
+            knots=knots,
+            locs=locs,
+            kernel_class=kernel_class,
+            extrap_transition_width=extrap_transition_width,
+        )
 
     def build_graph(self):
         graph = lsl.GraphBuilder().add(self.response).build_model()
@@ -331,7 +385,9 @@ class Model:
     @property
     def eta_hyperparam_names(self) -> list[str]:
         kernel_value = self.eta.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        amplitude_name = (
+            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        )
         length_scale_name = kernel_value.kwinputs["length_scale"].var.name
         return [amplitude_name, length_scale_name]
 
@@ -343,7 +399,9 @@ class Model:
     def delta_hyperparam_names(self) -> list[str]:
         L = self.delta.value_node.kwinputs["L"]
         kernel_value = L.var.value_node.inputs[0].var.value_node
-        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        amplitude_name = (
+            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        )
         length_scale_name = kernel_value.kwinputs["length_scale"].var.name
         return [amplitude_name, length_scale_name]
 
@@ -355,7 +413,9 @@ class Model:
     def alpha_hyperparam_names(self) -> list[str]:
         alpha_var = self.alpha.value_node.inputs[0].var
         kernel_value = alpha_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        amplitude_name = (
+            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        )
         length_scale_name = kernel_value.kwinputs["length_scale"].var.name
         return [amplitude_name, length_scale_name]
 
@@ -367,12 +427,16 @@ class Model:
     def beta_hyperparam_names(self) -> list[str]:
         beta_var = self.exp_beta.value_node.inputs[0].var
         kernel_value = beta_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        amplitude_name = kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        amplitude_name = (
+            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        )
         length_scale_name = kernel_value.kwinputs["length_scale"].var.name
         return [amplitude_name, length_scale_name]
 
 
-def predict_normalization_and_deriv(graph: lsl.Model, y: Array, model_state: ModelState) -> Array:
+def predict_normalization_and_deriv(
+    graph: lsl.Model, y: Array, model_state: ModelState
+) -> Array:
     """
     y: (Nobs, Nloc)
     """
