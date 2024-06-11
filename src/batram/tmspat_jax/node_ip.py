@@ -486,7 +486,7 @@ class Model:
         self.knots = knots
         self.nparam = D
         if eta_fixed:
-            self.eta = EtaParamFixed()
+            self.eta = EtaParamFixed(locs=locs)
         else:
             self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
         self.delta = DeltaParam(
