@@ -441,10 +441,11 @@ class EtaParam(lsl.Var):
 class EtaParamFixed(lsl.Var):
     def __init__(
         self,
+        locs: Array,
         name: str = "eta",
     ) -> None:
         super().__init__(
-            value=0.0,
+            value=jnp.full(shape=(locs.shape[0],), fill_value=-1.0),
             name=name,
         )
         self.parameter_names = []
