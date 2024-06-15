@@ -114,6 +114,13 @@ def rw_weight_matrix(D: int):
     W = C @ jnp.r_[jnp.zeros((1, D - 2)), L]
     return W
 
+def rw_weight_matrix_noncentered(D: int):
+    B = brownian_motion_mat(D - 2, D - 2)
+    L = jnp.linalg.cholesky(B, upper=False)
+    W = jnp.r_[jnp.zeros((2, D - 2)), L]
+    W = jnp.c_[jnp.ones((D, 1)), W]
+    return W
+
 
 class DeltaParam(lsl.Var):
     def __init__(
@@ -143,7 +150,7 @@ class DeltaParam(lsl.Var):
         kernel_args["length_scale"] = length_scale
 
         latent_delta = lsl.param(
-            jnp.zeros((K * (D - 2),)),
+            jnp.zeros((K * (D - 1),)),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name="latent_delta",
         )
@@ -163,9 +170,12 @@ class DeltaParam(lsl.Var):
             name="kernel_latent_delta_u",
         )
 
-        W = rw_weight_matrix(D)
+        W = rw_weight_matrix_noncentered(D)
 
-        def _compute_delta(latent_delta, eta, Kuu, Kdu):
+        intercept_mean = lsl.param(0.0, name="intercept_mean")
+        scale_mean = lsl.param(0.0, name="scale_mean")
+
+        def _compute_delta(intercept_mean, scale_mean, latent_delta, eta, Kuu, Kdu):
             salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
@@ -174,17 +184,22 @@ class DeltaParam(lsl.Var):
             exp_eta = jnp.expand_dims(jnp.exp(eta), -1)
             Wkron = jnp.kron(W, exp_eta[:K, :] * L)
             u = Wkron @ latent_delta
-            u_mat = jnp.reshape(u, (D - 1, K))
+            u_mat = jnp.reshape(u, (D, K))
 
             Kdu_uui = jnp.kron(W, exp_eta[K:, :] * (Kdu @ Li.T))
             delta_long = Kdu_uui @ latent_delta
-            delta_mat = jnp.reshape(delta_long, (D - 1, locs.shape[0] - K))
+            delta_mat = jnp.reshape(delta_long, (D, locs.shape[0] - K))
 
-            return jnp.concatenate([u_mat, delta_mat], axis=1)
+            delta = jnp.concatenate([u_mat, delta_mat], axis=1)
+            delta = delta.at[0,:].set(delta[0,:] + intercept_mean)
+            delta = delta.at[1,:].set(delta[1,:] + scale_mean)
+            return delta
 
         super().__init__(
             lsl.Calc(
                 _compute_delta,
+                intercept_mean=intercept_mean,
+                scale_mean=scale_mean,
                 latent_delta=latent_delta,
                 eta=eta,
                 Kuu=kernel_uu,
@@ -195,6 +210,8 @@ class DeltaParam(lsl.Var):
 
         self.parameter_names = [latent_delta.name]
         self.hyperparameter_names = [
+            intercept_mean.name,
+            scale_mean.name,
             amplitude_transformed.name,
             length_scale_transformed.name,
         ]
@@ -220,13 +237,11 @@ def sfn(exp_shape, dknots: float | Array):
 
 
 class ShapeCoef(lsl.Var):
-    def __init__(self, delta: lsl.Var, dknots: float | Array) -> None:
+    def __init__(self, delta: lsl.Var) -> None:
         def _compute_shape_coef(delta):
-            exp_delta = jnp.exp(delta)
-            slope_correction_factor = sfn(exp_delta.T, dknots)
-            return exp_delta.cumsum(axis=0) / jnp.expand_dims(
-                slope_correction_factor, 0
-            )
+            exp_delta = delta
+            exp_delta = exp_delta.at[1:,:].set(jnp.exp(delta[1:,:]))
+            return exp_delta.cumsum(axis=0).T
 
         super().__init__(lsl.Calc(_compute_shape_coef, delta), name="shape_coef")
 
@@ -282,7 +297,9 @@ class AlphaParam(lsl.Var):
 
         a = knots[4] - 2 * knots[3]
 
-        def _compute_param(latent_alpha, Kuu, Kdu):
+        constant = lsl.param(0.0, name=f"{name}_mean")
+
+        def _compute_param(constant, latent_alpha, Kuu, Kdu):
             salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
@@ -290,80 +307,14 @@ class AlphaParam(lsl.Var):
 
             u = L @ latent_alpha
             alpha = Kdu @ Li.T @ latent_alpha
-            return jnp.r_[u, alpha] - a
+            return constant + jnp.r_[u, alpha] - a
 
         super().__init__(
-            lsl.Calc(_compute_param, latent_alpha, kernel_uu, kernel_du), name=name
+            lsl.Calc(_compute_param, constant, latent_alpha, kernel_uu, kernel_du), name=name
         )
         self.parameter_names = [latent_alpha.name]
         self.hyperparameter_names = [
-            amplitude_transformed.name,
-            length_scale_transformed.name,
-        ]
-
-
-class ExpBetaParam(lsl.Var):
-    def __init__(
-        self,
-        locs: Array,
-        K: int,
-        name: str = "beta",
-        kernel_class: type[
-            tfk.AutoCompositeTensorPsdKernel
-        ] = tfk.ExponentiatedQuadratic,
-    ) -> None:
-        kernel_args = dict()
-        amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
-        amplitude = lsl.Var(
-            lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
-        )
-        length_scale_transformed = lsl.param(
-            0.5, name=f"length_scale_{name}_transformed"
-        )
-        length_scale = lsl.Var(
-            lsl.Calc(jax.nn.softplus, length_scale_transformed),
-            name=f"length_scale_{name}",
-        )
-        kernel_args["amplitude"] = amplitude
-        kernel_args["length_scale"] = length_scale
-
-        kernel_uu = Kernel(
-            x=locs[:K, :],
-            kernel_class=kernel_class,
-            **kernel_args,
-            name=f"kernel_{name}",
-        )
-
-        kernel_du = Kernel2(
-            x1=locs[K:, :],
-            x2=locs[:K, :],
-            kernel_class=kernel_class,
-            **kernel_args,
-            name=f"kernel_latent_{name}_u",
-        )
-
-        latent_beta = lsl.param(
-            jnp.zeros((K,)),
-            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
-            name=f"latent_{name}",
-        )
-
-        def _compute_param(latent, Kuu, Kdu):
-            salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
-            Kuu = Kuu + salt
-            L = jnp.linalg.cholesky(Kuu)
-            Li = jnp.linalg.inv(L)
-
-            u = L @ latent
-            var = Kdu @ Li.T @ latent
-            return jnp.exp(jnp.r_[u, var])
-
-        super().__init__(
-            lsl.Calc(_compute_param, latent_beta, kernel_uu, kernel_du),
-            name=f"exp_{name}",
-        )
-        self.parameter_names = [latent_beta.name]
-        self.hyperparameter_names = [
+            constant.name,
             amplitude_transformed.name,
             length_scale_transformed.name,
         ]
@@ -457,15 +408,15 @@ class EtaParamFixed(lsl.Var):
 class TransformationCoef(lsl.Var):
     """Dimension (Nloc, D)"""
 
-    def __init__(self, alpha: lsl.Var, exp_beta: lsl.Var, shape_coef: lsl.Var) -> None:
-        def _assemble_trafo_coef(alpha, exp_beta, shape_coef):
+    def __init__(self, alpha: lsl.Var, shape_coef: lsl.Var) -> None:
+        def _assemble_trafo_coef(alpha, shape_coef):
             alpha = jnp.expand_dims(alpha, 0)
-            scaled_shape = alpha + jnp.expand_dims(exp_beta, 0) * shape_coef
+            scaled_shape = alpha + shape_coef
             coef = jnp.r_[alpha, scaled_shape]
             return coef.T
 
         super().__init__(
-            lsl.Calc(_assemble_trafo_coef, alpha, exp_beta, shape_coef),
+            lsl.Calc(_assemble_trafo_coef, alpha, shape_coef),
             name="trafo_coef",
         )
 
@@ -484,7 +435,6 @@ class Model:
         eta_fixed: bool = False
     ) -> None:
         D = jnp.shape(knots)[0] - 4
-        dknots = jnp.diff(knots).mean()
         self.knots = knots
         self.nparam = D
         self.eta_fixed = eta_fixed
@@ -495,13 +445,7 @@ class Model:
         self.delta = DeltaParam(
             locs, D, self.eta, K=K, kernel_class=kernel_class
         ).update()
-        self.cumsum_exp_delta = ShapeCoef(self.delta, dknots).update()
-        self.exp_beta = ExpBetaParam(locs, K=K, kernel_class=kernel_class).update()
-        self.alpha = AlphaParam(locs, knots, K=K, kernel_class=kernel_class).update()
-
-        self.coef = TransformationCoef(
-            self.alpha, self.exp_beta, self.cumsum_exp_delta
-        ).update()
+        self.coef = ShapeCoef(self.delta).update()
 
         self.extrap_transition_width = extrap_transition_width
         self.bspline = ptm.ExtrapBSplineApprox(
@@ -578,9 +522,7 @@ class Model:
     
     def param(self) -> list[str]:
         param = (
-            self.alpha.parameter_names
-            + self.exp_beta.parameter_names
-            + self.delta.parameter_names
+            self.delta.parameter_names
         )
 
         if not self.eta_fixed:
@@ -591,9 +533,7 @@ class Model:
     
     def hyperparam(self) -> list[str]:
         hyperparam = (
-            self.alpha.hyperparameter_names
-            + self.exp_beta.hyperparameter_names
-            + self.delta.hyperparameter_names
+            self.delta.hyperparameter_names
         )
 
         if not self.eta_fixed:
