@@ -119,6 +119,8 @@ def rw_weight_matrix_noncentered(D: int):
     L = jnp.linalg.cholesky(B, upper=False)
     W = jnp.r_[jnp.zeros((2, D - 2)), L]
     W = jnp.c_[jnp.ones((D, 1)), W]
+    W = jnp.c_[jnp.zeros((D, 1)), W]
+    W = W.at[0,0].set(1.0)
     return W
 
 
@@ -150,7 +152,7 @@ class DeltaParam(lsl.Var):
         kernel_args["length_scale"] = length_scale
 
         latent_delta = lsl.param(
-            jnp.zeros((K * (D - 1),)),
+            jnp.zeros((K * D,)),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name="latent_delta",
         )
