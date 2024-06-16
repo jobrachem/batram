@@ -245,7 +245,7 @@ class ShapeCoef(lsl.Var):
     def __init__(self, delta: lsl.Var) -> None:
         def _compute_shape_coef(delta):
             exp_delta = delta
-            exp_delta = exp_delta.at[1:,:].set(softplus(delta[1:,:], beta=4.0, gamma=2.0))
+            exp_delta = exp_delta.at[1:,:].set(softplus(delta[1:,:], beta=4.0, gamma=1.5))
             return exp_delta.cumsum(axis=0).T
 
         super().__init__(lsl.Calc(_compute_shape_coef, delta), name="shape_coef")
