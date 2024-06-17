@@ -1,5 +1,10 @@
 """
 Nodes for inducing points version.
+
+- Slope of transformation is no separate parameter anymore, shares hyperparamters
+- Alpha parameter: Intercept with its own hyperparameters
+- Alpha parameter: Has prior mean, is estimated
+- Slope has prior mean, is estimated
 """
 
 from __future__ import annotations

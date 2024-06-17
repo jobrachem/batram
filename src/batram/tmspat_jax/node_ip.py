@@ -1,5 +1,10 @@
 """
 Nodes for inducing points version.
+
+Basic model version.
+- Slope of transformation fixed to one.
+- Alpha parameter: Intercept with its own hyperparameters
+- Beta parameter: Slope with its own hyperparameters
 """
 
 from __future__ import annotations
