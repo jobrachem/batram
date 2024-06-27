@@ -39,15 +39,15 @@ class LocationParam(lsl.Var):
         kernel_args["amplitude"] = amplitude
         kernel_args["length_scale"] = length_scale
         kernel_uu = Kernel(
-            x=locs[:K, :],
+            x=locs[:K, ...],
             kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_{name}",
         ).update()
 
         kernel_du = Kernel2(
-            x1=locs[K:, :],
-            x2=locs[:K, :],
+            x1=locs[K:, ...],
+            x2=locs[:K, ...],
             kernel_class=kernel_class,
             **kernel_args,
             name=f"kernel_latent_{name}_u",
