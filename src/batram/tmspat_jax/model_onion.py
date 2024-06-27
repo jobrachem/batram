@@ -619,7 +619,7 @@ class Model:
     
     def normalization_inverse(self, z: Array) -> Array:
         hfn = NormalizationFn(
-            knots=self.knots, order=3, transition_width=self.extrap_transition_width
+            knots=self.knots.knots, order=3, transition_width=self.extrap_transition_width
         )
 
         y = hfn.inverse(
@@ -645,7 +645,7 @@ def predict_normalization_inverse(
     z: Array, coef: Array, model: Model, ngrid: int = 200
 ):
     hfn = NormalizationFn(
-        knots=model.knots, order=3, transition_width=model.extrap_transition_width
+        knots=model.knots.knots, order=3, transition_width=model.extrap_transition_width
     )
 
     return hfn.inverse(
