@@ -20,8 +20,9 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
 from liesel_ptm.ptm_ls import NormalizationFn
-from liesel_ptm.bsplines import CoefWeights, EnforceSlope1, OnionCoef, Knots, StreamCoef
+from liesel_ptm.bsplines import OnionCoef, Knots, StreamCoef, SimpleOnionCoef, SimpleStreamCoef
 from .optim import optim_flat, OptimResult
+from enum import Enum, auto
 
 Array = Any
 
@@ -119,12 +120,36 @@ def rw_weight_matrix(D: int):
     W = C @ jnp.r_[jnp.zeros((1, D - 2)), L]
     return W
 
+
 def rw_weight_matrix_noncentered(D: int):
     B = brownian_motion_mat(D - 2, D - 2)
     L = jnp.linalg.cholesky(B, upper=False)
     W = jnp.r_[jnp.zeros((1, D - 2)), L]
-    W = jnp.c_[jnp.ones((D-1, 1)), W]
+    W = jnp.c_[jnp.ones((D - 1, 1)), W]
     return W
+
+
+def weighted_moving_average_matrix(n, weights):
+    k = len(weights)
+    wma_matrix = jnp.zeros((n, n))
+
+    for i in range(n):
+        for j in range(max(0, i - k + 1), i + 1):
+            wma_matrix = wma_matrix.at[i, j].set(weights[k - (i - j) - 1])
+
+    # Normalize the matrix rows to ensure weighted average
+    for i in range(n):
+        row_sum = jnp.sum(wma_matrix[i])
+        if row_sum != 0:
+            wma_matrix = wma_matrix.at[i].set(wma_matrix[i] / row_sum)
+
+    return wma_matrix
+
+
+class DeltaSmoothing(Enum):
+    RANDOM_WALK = auto()
+    RIDGE = auto()
+    RIDGE_MOVING_AVERAGE = auto()
 
 
 class DeltaParam(lsl.Var):
@@ -134,6 +159,7 @@ class DeltaParam(lsl.Var):
         D: int,
         eta: lsl.Var,
         K: int,
+        smoothing_prior: DeltaSmoothing,
         kernel_class: type[
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
@@ -154,11 +180,10 @@ class DeltaParam(lsl.Var):
         kernel_args["amplitude"] = amplitude
         kernel_args["length_scale"] = length_scale
 
-        latent_delta = lsl.param(
-            jnp.zeros((K * (D - 1),)),
-            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
-            name="latent_delta",
-        )
+        self.amplitude = amplitude
+        self.length_scale = length_scale
+
+        
 
         kernel_uu = Kernel(
             x=locs[:K, :],
@@ -175,7 +200,22 @@ class DeltaParam(lsl.Var):
             name="kernel_latent_delta_u",
         )
 
-        W = rw_weight_matrix_noncentered(D)
+        if smoothing_prior == DeltaSmoothing.RANDOM_WALK:
+            W = rw_weight_matrix(D)
+        elif smoothing_prior == DeltaSmoothing.RIDGE:
+            W = jnp.eye(D - 1)
+        elif smoothing_prior == DeltaSmoothing.RIDGE_MOVING_AVERAGE:
+            W = weighted_moving_average_matrix(n=(D - 1), weights=jnp.array([0.5, 0.5]))
+        else:
+            raise ValueError(f"'{smoothing_prior=}': value is not recognized.")
+
+        nrow_W = W.shape[0]
+
+        latent_delta = lsl.param(
+            jnp.zeros((K * (W.shape[1]),)),
+            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            name="latent_delta",
+        )
 
         def _compute_delta(latent_delta, eta, Kuu, Kdu):
             salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
@@ -186,11 +226,11 @@ class DeltaParam(lsl.Var):
             exp_eta = jnp.expand_dims(jnp.exp(eta), -1)
             Wkron = jnp.kron(W, exp_eta[:K, :] * L)
             u = Wkron @ latent_delta
-            u_mat = jnp.reshape(u, (D - 1, K))
+            u_mat = jnp.reshape(u, (nrow_W, K))
 
             Kdu_uui = jnp.kron(W, exp_eta[K:, :] * (Kdu @ Li.T))
             delta_long = Kdu_uui @ latent_delta
-            delta_mat = jnp.reshape(delta_long, (D - 1, locs.shape[0] - K))
+            delta_mat = jnp.reshape(delta_long, (nrow_W, locs.shape[0] - K))
 
             return jnp.concatenate([u_mat, delta_mat], axis=1)
 
@@ -214,16 +254,6 @@ class DeltaParam(lsl.Var):
         self.latent = latent_delta
 
 
-
-class ShapeCoef(lsl.Var):
-    def __init__(self, delta: lsl.Var) -> None:
-        def _compute_shape_coef(delta):
-            exp_delta = jnp.exp(delta)
-            return exp_delta.cumsum(axis=0)
-
-        super().__init__(lsl.Calc(_compute_shape_coef, delta), name="shape_coef")
-
-
 class AlphaParam(lsl.Var):
     def __init__(
         self,
@@ -233,21 +263,30 @@ class AlphaParam(lsl.Var):
         kernel_class: type[
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
+        amplitude: lsl.Var | None = None,
+        length_scale: lsl.Var | None = None,
     ) -> None:
         kernel_args = dict()
 
-        amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
-        amplitude = lsl.Var(
-            lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
-        )
+        self.hyperparameter_names = []
 
-        length_scale_transformed = lsl.param(
-            0.5, name=f"length_scale_{name}_transformed"
-        )
-        length_scale = lsl.Var(
-            lsl.Calc(jax.nn.softplus, length_scale_transformed),
-            name=f"length_scale_{name}",
-        )
+        if amplitude is None:
+            amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
+            amplitude = lsl.Var(
+                lsl.Calc(jax.nn.softplus, amplitude_transformed),
+                name=f"amplitude_{name}",
+            )
+            self.hyperparameter_names.append(amplitude.name)
+
+        if length_scale is None:
+            length_scale_transformed = lsl.param(
+                0.5, name=f"length_scale_{name}_transformed"
+            )
+            length_scale = lsl.Var(
+                lsl.Calc(jax.nn.softplus, length_scale_transformed),
+                name=f"length_scale_{name}",
+            )
+            self.hyperparameter_names.append(length_scale.name)
 
         kernel_args["amplitude"] = amplitude
         kernel_args["length_scale"] = length_scale
@@ -285,14 +324,11 @@ class AlphaParam(lsl.Var):
             return constant + jnp.r_[u, alpha]
 
         super().__init__(
-            lsl.Calc(_compute_param, constant, latent_alpha, kernel_uu, kernel_du), name=name
+            lsl.Calc(_compute_param, constant, latent_alpha, kernel_uu, kernel_du),
+            name=name,
         )
         self.parameter_names = [latent_alpha.name]
-        self.hyperparameter_names = [
-            constant.name,
-            amplitude_transformed.name,
-            length_scale_transformed.name,
-        ]
+        self.hyperparameter_names.append(constant.name)
 
 
 class ExpBetaParam(lsl.Var):
@@ -304,19 +340,30 @@ class ExpBetaParam(lsl.Var):
         kernel_class: type[
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
+        amplitude: lsl.Var | None = None,
+        length_scale: lsl.Var | None = None,
     ) -> None:
         kernel_args = dict()
-        amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
-        amplitude = lsl.Var(
-            lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
-        )
-        length_scale_transformed = lsl.param(
-            0.5, name=f"length_scale_{name}_transformed"
-        )
-        length_scale = lsl.Var(
-            lsl.Calc(jax.nn.softplus, length_scale_transformed),
-            name=f"length_scale_{name}",
-        )
+        self.hyperparameter_names = []
+
+        if amplitude is None:
+            amplitude_transformed = lsl.param(0.5, name=f"amplitude_{name}_transformed")
+            amplitude = lsl.Var(
+                lsl.Calc(jax.nn.softplus, amplitude_transformed),
+                name=f"amplitude_{name}",
+            )
+            self.hyperparameter_names.append(amplitude.name)
+
+        if length_scale is None:
+            length_scale_transformed = lsl.param(
+                0.5, name=f"length_scale_{name}_transformed"
+            )
+            length_scale = lsl.Var(
+                lsl.Calc(jax.nn.softplus, length_scale_transformed),
+                name=f"length_scale_{name}",
+            )
+            self.hyperparameter_names.append(length_scale.name)
+
         kernel_args["amplitude"] = amplitude
         kernel_args["length_scale"] = length_scale
 
@@ -341,7 +388,9 @@ class ExpBetaParam(lsl.Var):
             name=f"latent_{name}",
         )
 
-        def _compute_param(latent, Kuu, Kdu):
+        constant = lsl.param(0.0, name=f"{name}_mean")
+
+        def _compute_param(constant, latent, Kuu, Kdu):
             salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
@@ -349,17 +398,14 @@ class ExpBetaParam(lsl.Var):
 
             u = L @ latent
             var = Kdu @ Li.T @ latent
-            return jnp.exp(jnp.r_[u, var])
+            return jnp.exp(jnp.r_[u, var] + constant)
 
         super().__init__(
-            lsl.Calc(_compute_param, latent_beta, kernel_uu, kernel_du),
+            lsl.Calc(_compute_param, constant, latent_beta, kernel_uu, kernel_du),
             name=f"exp_{name}",
         )
         self.parameter_names = [latent_beta.name]
-        self.hyperparameter_names = [
-            amplitude_transformed.name,
-            length_scale_transformed.name,
-        ]
+        self.hyperparameter_names.append(constant.name)
 
 
 class EtaParam(lsl.Var):
@@ -429,7 +475,7 @@ class EtaParam(lsl.Var):
         self.hyperparameter_names = [
             amplitude_transformed.name,
             length_scale_transformed.name,
-            mean.name
+            mean.name,
         ]
 
 
@@ -450,10 +496,24 @@ class EtaParamFixed(lsl.Var):
 class TransformationCoef(lsl.Var):
     """Dimension (Nloc, D)"""
 
-    def __init__(self, alpha: lsl.Var | None, exp_beta: lsl.Var | None, shape_coef: lsl.Var, coef_spec: OnionCoef | StreamCoef) -> None:
-        
-        alpha = alpha if alpha is not None else lsl.Data(jnp.zeros(1), _name="auto_alpha_fixed_to_zero")
-        exp_beta = exp_beta if exp_beta is not None else lsl.Data(jnp.ones(1), _name="auto_exp_beta_fixed_to_one")
+    def __init__(
+        self,
+        alpha: lsl.Var | None,
+        exp_beta: lsl.Var | None,
+        shape_coef: lsl.Var,
+        coef_spec: OnionCoef | StreamCoef | SimpleOnionCoef | SimpleStreamCoef,
+    ) -> None:
+
+        alpha = (
+            alpha
+            if alpha is not None
+            else lsl.Data(jnp.zeros(1), _name="auto_alpha_fixed_to_zero")
+        )
+        exp_beta = (
+            exp_beta
+            if exp_beta is not None
+            else lsl.Data(jnp.ones(1), _name="auto_exp_beta_fixed_to_one")
+        )
 
         def _assemble_trafo_coef(alpha, exp_beta, shape_coef):
             alpha = jnp.expand_dims(alpha, 0)
@@ -476,31 +536,52 @@ class Model:
         coef_spec: OnionCoef | StreamCoef,
         locs: Array,
         K: int,
+        smoothing_prior: DeltaSmoothing,
         kernel_class: type[
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
         extrap_transition_width: float = 0.3,
         eta_fixed: bool = False,
         include_alpha: bool = False,
-        include_exp_beta: bool = False
+        include_exp_beta: bool = False,
+        shared_hyperparameters_alpha: bool = True,
+        shared_hyperparameters_beta: bool = True,
     ) -> None:
         self.knots = knots
         self.eta_fixed = eta_fixed
+
         if eta_fixed:
             self.eta = EtaParamFixed(locs=locs)
         else:
             self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
         self.delta = DeltaParam(
-            locs, self.knots.nparam + 1, self.eta, K=K, kernel_class=kernel_class
+            locs, self.knots.nparam + 1, self.eta, K=K, kernel_class=kernel_class,
+            smoothing_prior=smoothing_prior
         ).update()
 
-        if include_alpha:
+        if include_alpha and not shared_hyperparameters_alpha:
             self.alpha = AlphaParam(locs, K=K, kernel_class=kernel_class).update()
+        elif include_alpha and shared_hyperparameters_alpha:
+            self.alpha = AlphaParam(
+                locs,
+                K=K,
+                kernel_class=kernel_class,
+                length_scale=self.delta.length_scale,
+                amplitude=self.delta.amplitude,
+            ).update()
         else:
             self.alpha = None
-        
-        if include_exp_beta:
+
+        if include_exp_beta and not shared_hyperparameters_beta:
             self.exp_beta = ExpBetaParam(locs, K=K, kernel_class=kernel_class).update()
+        elif include_exp_beta and shared_hyperparameters_beta:
+            self.exp_beta = ExpBetaParam(
+                locs,
+                K=K,
+                kernel_class=kernel_class,
+                length_scale=self.delta.length_scale,
+                amplitude=self.delta.amplitude,
+            ).update()
         else:
             self.exp_beta = None
 
@@ -551,47 +632,44 @@ class Model:
 
         self.graph = None
 
-    
     def build_graph(self):
         self.graph = lsl.GraphBuilder().add(self.response).build_model()
         return self.graph
-    
+
     def param(self) -> list[str]:
         param = self.delta.parameter_names
 
         if not self.eta_fixed:
             param += self.eta.parameter_names
-        
+
         if self.alpha is not None:
             param += self.alpha.parameter_names
-        
+
         if self.exp_beta is not None:
             param += self.exp_beta.parameter_names
-        
+
         return param
-    
-    
+
     def hyperparam(self) -> list[str]:
         hyperparam = self.delta.hyperparameter_names
-        
+
         if not self.eta_fixed:
             hyperparam += self.eta.hyperparameter_names
 
         if self.alpha is not None:
             hyperparam += self.alpha.hyperparameter_names
-        
+
         if self.exp_beta is not None:
             hyperparam += self.exp_beta.hyperparameter_names
-        
+
         return hyperparam
 
-    
     def fit(
         self,
         graph: lsl.Model | None = None,
         graph_validation: lsl.Model | None = None,
         optimizer: optax.GradientTransformation | None = None,
-        stopper: ptm.Stopper | None = None
+        stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
         graph = self.graph if graph is None else graph
         param = self.param()
@@ -607,7 +685,7 @@ class Model:
         graph.state = result.model_state
         graph.update()
         return result
-    
+
     def normalization_and_logdet(self, y: Array) -> tuple[Array, Array]:
         _, vars_ = self.graph.copy_nodes_and_vars()
         graph_copy = lsl.GraphBuilder().add(vars_["response"]).build_model()
@@ -616,14 +694,19 @@ class Model:
         z = graph_copy.vars["normalization"].value
         logdet = jnp.log(graph_copy.vars["normalization_deriv"].value)
         return z, logdet
-    
+
     def normalization_inverse(self, z: Array) -> Array:
         hfn = NormalizationFn(
-            knots=self.knots.knots, order=3, transition_width=self.extrap_transition_width
+            knots=self.knots.knots,
+            order=3,
+            transition_width=self.extrap_transition_width,
         )
 
         y = hfn.inverse(
-            z=z.T, coef=self.coef.update().value, norm_mean=jnp.zeros(1), norm_sd=jnp.ones(1)
+            z=z.T,
+            coef=self.coef.update().value,
+            norm_mean=jnp.zeros(1),
+            norm_sd=jnp.ones(1),
         ).T
 
         return y
