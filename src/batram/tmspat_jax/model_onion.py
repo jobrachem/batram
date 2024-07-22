@@ -8,7 +8,6 @@ Nodes for inducing points version.
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Any
 
 import jax
