@@ -8,7 +8,6 @@ Nodes for inducing points version.
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Any
 
 import jax
@@ -21,7 +20,7 @@ import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
 from liesel_ptm.ptm_ls import NormalizationFn
 from liesel_ptm.bsplines import OnionCoef2, Knots2
-from .optim import optim_flat, OptimResult
+from liesel.goose.optim import optim_flat, OptimResult
 from enum import Enum, auto
 
 Array = Any
