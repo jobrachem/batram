@@ -32,6 +32,7 @@ class Model:
 
         self.graph = None
 
+
     def build_graph(self):
         self.graph = lsl.GraphBuilder().add(self.response).build_model()
         return self.graph
@@ -90,6 +91,12 @@ class Model:
 
         return y
 
+    def normalization_and_logdet(self, y: Array) -> tuple[Array, Array]:
+        return self.transformation_and_logdet(y)
+    
+    def normalization_inverse(self, z: Array) -> Array:
+        return self.transformation_inverse(z)
+
 
 class TransformationModel(Model):
     def __init__(
@@ -147,7 +154,7 @@ class TransformationModel(Model):
         return self.coef.parameter_names
 
     def hyperparam_names(self) -> list[str]:
-        return self.coef.hyper_parameter_names
+        return self.coef.hyperparameter_names
 
     def transformation_and_logdet(self, y: Array) -> tuple[Array, Array]:
         _, vars_ = self.graph.copy_nodes_and_vars()
@@ -167,7 +174,7 @@ class TransformationModel(Model):
 
         y = hfn.inverse_newton(
             z=z.T,
-            coef=self.coef.update().value,
+            coef=self.coef.update().value.T,
             norm_mean=jnp.zeros(1),
             norm_sd=jnp.ones(1),
         ).T
