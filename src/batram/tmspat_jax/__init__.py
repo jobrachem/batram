@@ -1,3 +1,5 @@
-from .node import Model, predict_normalization_and_deriv
+from .model import Model, TransformationModel
+from .ppnode import OnionCoefPredictivePointProcessGP, OnionKnots
+from liesel_ptm import TransformedVar
 
-__all__ = ["Model", "predict_normalization_and_deriv"]
+__all__ = ["Model", "TransformationModel", "OnionCoefPredictivePointProcessGP", "OnionKnots", "TransformedVar"]
