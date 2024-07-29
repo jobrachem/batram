@@ -192,6 +192,11 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
             name=name,
         )
 
+        self.latent_var = latent_var
+        self.kernel_uu = kernel_uu
+        self.kernel_du = kernel_du
+        self.W = W
+
         self.parameter_names = [latent_var.name]
         self.hyperparameter_names = [
             find_param(param).name for param in kernel_params.values()
