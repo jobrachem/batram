@@ -19,7 +19,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
 from liesel_ptm.ptm_ls import NormalizationFn
-from liesel_ptm.bsplines import OnionCoef2, Knots2
+from liesel_ptm.bsplines import OnionCoef, OnionKnots
 from liesel.goose.optim import optim_flat, OptimResult
 from enum import Enum, auto
 
@@ -250,7 +250,10 @@ class DeltaParam(lsl.Var):
             length_scale_transformed.name,
         ]
 
-        self.latent = latent_delta
+        self.latent_var = latent_delta
+        self.W = W
+        self.kernel_uu = kernel_uu
+        self.kernel_du = kernel_du
 
 
 class AlphaParam(lsl.Var):
@@ -485,7 +488,7 @@ class EtaParamFixed(lsl.Var):
         name: str = "eta",
     ) -> None:
         super().__init__(
-            value=jnp.full(shape=(locs.shape[0],), fill_value=-1.0),
+            value=jnp.full(shape=(locs.shape[0],), fill_value=0.0),
             name=name,
         )
         self.parameter_names = []
@@ -500,7 +503,7 @@ class TransformationCoef(lsl.Var):
         alpha: lsl.Var | None,
         exp_beta: lsl.Var | None,
         shape_coef: lsl.Var,
-        coef_spec: OnionCoef2,
+        coef_spec: OnionCoef,
     ) -> None:
 
         alpha = (
@@ -517,7 +520,7 @@ class TransformationCoef(lsl.Var):
         def _assemble_trafo_coef(alpha, exp_beta, shape_coef):
             alpha = jnp.expand_dims(alpha, 0)
             exp_beta = jnp.expand_dims(exp_beta, 0)
-            coef = coef_spec.compute_coef(shape_coef.T).T
+            coef = coef_spec(shape_coef.T).T
             coef = alpha + exp_beta * coef
             return coef.T
 
@@ -531,8 +534,8 @@ class Model:
     def __init__(
         self,
         y: Array,
-        knots: Knots2,
-        coef_spec: OnionCoef2,
+        knots: OnionKnots,
+        coef_spec: OnionCoef,
         locs: Array,
         K: int,
         smoothing_prior: DeltaSmoothing,
