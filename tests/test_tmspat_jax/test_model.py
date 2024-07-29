@@ -4,8 +4,10 @@ import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from batram.tmspat_jax.model import Model, TransformationModel, ChainedModel
 import jax.numpy as jnp
 import jax.random as jrd
+import jax
 import pytest
-from batram.tmspat_jax.ppnode import OnionCoefPredictivePointProcessGP, OnionKnots
+from batram.tmspat_jax.ppnode import OnionCoefPredictivePointProcessGP, OnionKnots, RandomWalkParamPredictivePointProcessGP, OnionCoef, TransformedVar
+import batram.tmspat_jax.model_onion2 as mo2
 
 key = jrd.PRNGKey(42)
 
@@ -99,6 +101,63 @@ class TestModel:
 
 class TestTransformationModel:
 
+    def test_against_model_onion2(self):
+        y = jrd.normal(key, shape=(20, 50))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        latent_coef = RandomWalkParamPredictivePointProcessGP(
+            locs=locs, 
+            D=knots.nparam + 1,
+            K=5,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=TransformedVar(jax.nn.softplus(0.5), name="amplitude"),
+            length_scale=TransformedVar(jax.nn.softplus(0.5), name="length_scale"),
+        )
+
+        coef_spec = OnionCoef(knots)
+        coef = OnionCoefPredictivePointProcessGP(latent_coef, coef_spec)
+
+        model = TransformationModel(y, knots=knots.knots, coef=coef)
+        model.build_graph()
+
+        model_old = mo2.Model(
+            y=y,
+            knots=knots,
+            coef_spec=coef_spec,
+            locs=locs,
+            K=5,
+            smoothing_prior=mo2.DeltaSmoothing.RANDOM_WALK,
+            kernel_class=tfk.ExponentiatedQuadratic,
+            eta_fixed=True,
+        )
+        model_old.build_graph()
+
+        assert jnp.allclose(model.transformation.value, y, atol=1e-2)
+        assert jnp.allclose(model_old.normalization.value, y, atol=1e-2)
+
+        assert jnp.allclose(model.response.log_prob , model_old.response.log_prob)
+
+        new_latent = jrd.normal(key=key, shape=latent_coef.latent_var.value.shape)
+        latent_coef.latent_var.value = new_latent
+        model_old.delta.latent_var.value = new_latent
+        
+        model.graph.update()
+        model_old.graph.update()
+
+        assert jnp.allclose(latent_coef.kernel_du.value, model_old.delta.kernel_du.value, atol=1e-5)
+        assert jnp.allclose(latent_coef.kernel_uu.value, model_old.delta.kernel_uu.value, atol=1e-5)
+        assert jnp.allclose(latent_coef.W, model_old.delta.W)
+        assert jnp.allclose(latent_coef.value, model_old.delta.value, atol=1e-5)
+        assert jnp.allclose(model.coef.value, model_old.coef.value.T, atol=1e-5)
+
+        assert jnp.allclose(model.graph.log_prob, model_old.graph.log_prob)
+        
+        
+        
+        
+
+    
     def test_init(self):
         y = jrd.normal(key, shape=(20, 50))
         locs = jrd.uniform(key, shape=(y.shape[1], 2))
@@ -117,6 +176,8 @@ class TestTransformationModel:
 
         assert not jnp.any(jnp.isinf(model.response.value))
         assert model.response.value.shape == y.shape
+
+
 
 
 class TestChainedModel:
