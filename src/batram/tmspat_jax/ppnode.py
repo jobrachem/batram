@@ -92,7 +92,7 @@ class ParamPredictivePointProcessGP(lsl.Var):
         )
 
         # a small value added to the diagonal of Kuu for numerical stability
-        salt = jnp.diag(jnp.full(shape=(kernel_du.valu.shape[0],), fill_value=1e-6))
+        salt = jnp.diag(jnp.full(shape=(kernel_uu.value.shape[0],), fill_value=1e-6))
 
         def _compute_param(latent_var, Kuu, Kdu):
             Kuu = Kuu + salt
@@ -108,6 +108,10 @@ class ParamPredictivePointProcessGP(lsl.Var):
             name=name,
         )
 
+        self.kernel_params = kernel_params
+        self.kernel_cls = kernel_cls
+        self.locs = locs
+        self.K = K
         self.parameter_names = [latent_var.name]
         self.hyperparameter_names = [
             find_param(param).name for param in kernel_params.values()
@@ -175,8 +179,9 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
             name=f"{name}_latent",
         )
 
+        salt = jnp.diag(jnp.full(shape=(kernel_uu.value.shape[0],), fill_value=1e-6))
+
         def _compute_param(latent_var, Kuu, Kdu):
-            salt = jnp.diag(jnp.full(shape=(Kuu.shape[0],), fill_value=1e-6))
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
             Li = jnp.linalg.inv(L)
@@ -200,11 +205,16 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
             ),
             name=name,
         )
+        self.update()
 
         self.latent_var = latent_var
         self.kernel_uu = kernel_uu
         self.kernel_du = kernel_du
         self.W = W
+        self.kernel_params = kernel_params
+        self.kernel_cls = kernel_cls
+        self.locs = locs
+        self.K = K
 
         self.parameter_names = [latent_var.name]
         self.hyperparameter_names = [
@@ -224,6 +234,7 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
             name=name,
         )
 
+        self.latent_coef = latent_coef
         self.parameter_names = latent_coef.parameter_names
         self.hyperparameter_names = latent_coef.hyperparameter_names
 
@@ -249,6 +260,42 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
         )
 
         return cls(coef_spec=coef_spec, latent_coef=latent_coef, name=name)
+
+    def spawn_intercept(
+        self, name: str = "intercept", **kernel_params
+    ) -> ParamPredictivePointProcessGP:
+        if not kernel_params:
+            kernel_params = self.latent_coef.kernel_params
+
+        intercept = ParamPredictivePointProcessGP(
+            locs=self.latent_coef.locs,
+            K=self.latent_coef.K,
+            kernel_cls=self.latent_coef.kernel_cls,
+            name=name,
+            **kernel_params,
+        )
+
+        return intercept
+
+    def spawn_slope(
+        self,
+        bijector: tfb.Bijector = tfb.Softplus(),
+        name: str = "slope",
+        **kernel_params,
+    ) -> ParamPredictivePointProcessGP:
+        if not kernel_params:
+            kernel_params = self.latent_coef.kernel_params
+
+        slope = ParamPredictivePointProcessGP(
+            locs=self.latent_coef.locs,
+            K=self.latent_coef.K,
+            kernel_cls=self.latent_coef.kernel_cls,
+            name=name,
+            bijector=bijector,
+            **kernel_params,
+        )
+
+        return slope
 
 
 class ModelOnionCoef(OnionCoefParam):
