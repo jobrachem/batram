@@ -146,3 +146,48 @@ class TestOnionCoefPredictivePointProcessGP:
 
         assert not jnp.any(jnp.isinf(param.value))
         assert param.value.shape == (knots.nparam + 6 + 1, 30)
+
+    def test_spawn_intercept(self):
+        amplitude = lsl.param(1.0)
+        length_scale = lsl.param(1.0)
+
+        locs = jrd.uniform(key, shape=(30, 2))
+
+        knots = OnionKnots(a=-3.0, b=3.0, nparam=10)
+
+        param = node.OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots=knots,
+            locs=locs,
+            K=5,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=amplitude,
+            length_scale=length_scale,
+        )
+
+        intercept = param.spawn_intercept()
+
+        assert amplitude in list(intercept.kernel_params.values())
+        assert length_scale in list(intercept.kernel_params.values())
+
+    def test_spawn_slope(self):
+        amplitude = lsl.param(1.0)
+        length_scale = lsl.param(1.0)
+
+        locs = jrd.uniform(key, shape=(30, 2))
+
+        knots = OnionKnots(a=-3.0, b=3.0, nparam=10)
+
+        param = node.OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots=knots,
+            locs=locs,
+            K=5,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=amplitude,
+            length_scale=length_scale,
+        )
+
+        slope = param.spawn_slope()
+
+        assert amplitude in list(slope.kernel_params.values())
+        assert length_scale in list(slope.kernel_params.values())
+        assert jnp.all(slope.value > 0.0)
