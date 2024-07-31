@@ -8,7 +8,11 @@ from .node_ip import Array
 from liesel.goose.optim import optim_flat, OptimResult
 from liesel_ptm.ptm_ls import NormalizationFn
 import jax.numpy as jnp
-from .ppnode import OnionCoefPredictivePointProcessGP
+from .ppnode import (
+    OnionCoefPredictivePointProcessGP,
+    ParamPredictivePointProcessGP,
+    ModelConst,
+)
 from liesel_ptm.nodes import TransformationDistLogDeriv
 
 
@@ -31,7 +35,6 @@ class Model:
         """Response variable."""
 
         self.graph = None
-
 
     def build_graph(self):
         self.graph = lsl.GraphBuilder().add(self.response).build_model()
@@ -93,7 +96,7 @@ class Model:
 
     def normalization_and_logdet(self, y: Array) -> tuple[Array, Array]:
         return self.transformation_and_logdet(y)
-    
+
     def normalization_inverse(self, z: Array) -> Array:
         return self.transformation_inverse(z)
 
@@ -104,9 +107,19 @@ class TransformationModel(Model):
         y: Array,
         knots: Array,
         coef: OnionCoefPredictivePointProcessGP,
+        intercept: ParamPredictivePointProcessGP | ModelConst | None = None,
+        slope: ParamPredictivePointProcessGP | ModelConst | None = None,
     ) -> None:
         self.knots = knots
         self.coef = coef
+
+        self.intercept = intercept
+        if intercept is None:
+            self.intercept = ModelConst(0.0, name="intercept")
+
+        self.slope = slope
+        if slope is None:
+            self.slope = ModelConst(1.0, name="slope")
 
         self._extrap_transition_width = 0.3
         self.bspline = ptm.ExtrapBSplineApprox(
@@ -118,11 +131,19 @@ class TransformationModel(Model):
 
         self.response_value = lsl.obs(y, name="response_hidden_value")
 
+        def trafo_and_deriv_fn(y, coef, intercept, slope):
+            spline, spline_deriv = basis_dot_and_deriv_fn(y.T, coef.T)
+            transformed = spline * slope + intercept
+            transformation_deriv = spline_deriv * slope
+            return transformed, transformation_deriv
+
         self.transformation_and_deriv = lsl.Var(
             lsl.Calc(
-                lambda y, c: basis_dot_and_deriv_fn(y.T, c.T),
-                self.response_value,
-                self.coef,
+                trafo_and_deriv_fn,
+                y=self.response_value,
+                coef=self.coef,
+                intercept=self.intercept,
+                slope=self.slope,
             ),
             name="transformation_and_deriv",
         ).update()
@@ -194,6 +215,7 @@ class ChainedModel(Model):
     ) -> None:
 
         self.param = params
+
         def normalization_and_logdet_fn(y, **params):
             dist = tfp_dist_cls(**params)
             u = dist.cdf(y)
@@ -203,7 +225,7 @@ class ChainedModel(Model):
 
             logdet = dist.log_prob(y) - normal.log_prob(z)
             return z, logdet
-        
+
         self.raw_response_value = lsl.obs(y, name="raw_response_value")
 
         self.normalization_and_logdet = lsl.Var(
@@ -222,7 +244,8 @@ class ChainedModel(Model):
         )
 
         self.response_value = lsl.Var(
-            lsl.Calc(lambda x: x[0], self.normalization_and_logdet), name="response_hidden_value"
+            lsl.Calc(lambda x: x[0], self.normalization_and_logdet),
+            name="response_hidden_value",
         )
 
         self.transformation_and_deriv = lsl.Var(
@@ -243,7 +266,9 @@ class ChainedModel(Model):
             return normalization_and_logdet[1] + jnp.log(transformation_and_deriv[1]).T
 
         self.log_det = lsl.Var(
-            lsl.Calc(log_deriv, self.normalization_and_logdet, self.transformation_and_deriv),
+            lsl.Calc(
+                log_deriv, self.normalization_and_logdet, self.transformation_and_deriv
+            ),
             name="log_det",
         ).update()
 
