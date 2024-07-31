@@ -172,10 +172,18 @@ class TransformationModel(Model):
         self.graph = None
 
     def param_names(self) -> list[str]:
-        return self.coef.parameter_names
+        names = []
+        names += self.coef.parameter_names
+        names += self.intercept.parameter_names
+        names += self.slope.parameter_names
+        return list(set(names))
 
     def hyperparam_names(self) -> list[str]:
-        return self.coef.hyperparameter_names
+        names = []
+        names += self.coef.hyperparameter_names
+        names += self.intercept.hyperparameter_names
+        names += self.slope.hyperparameter_names
+        return list(set(names))
 
     def transformation_and_logdet(self, y: Array) -> tuple[Array, Array]:
         _, vars_ = self.graph.copy_nodes_and_vars()
