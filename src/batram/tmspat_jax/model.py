@@ -41,13 +41,13 @@ class Model:
         param_names = []
         for param in self.params:
             param_names += param.parameter_names
-        return param_names
+        return list(set(param_names))
 
     def hyperparam_names(self) -> list[str]:
         hyper_param_names = []
         for param in self.params:
             hyper_param_names += param.hyperparameter_names
-        return hyper_param_names
+        return list(set(hyper_param_names))
 
     def fit(
         self,
