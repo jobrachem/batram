@@ -14,6 +14,7 @@ from .ppnode import (
     ModelConst,
     OnionCoefPredictivePointProcessGP,
     ParamPredictivePointProcessGP,
+    ModelOnionCoef
 )
 
 
@@ -106,7 +107,7 @@ class TransformationModel(Model):
         self,
         y: Array,
         knots: Array,
-        coef: OnionCoefPredictivePointProcessGP,
+        coef: OnionCoefPredictivePointProcessGP | ModelOnionCoef,
         intercept: ParamPredictivePointProcessGP | ModelConst | None = None,
         slope: ParamPredictivePointProcessGP | ModelConst | None = None,
     ) -> None:
@@ -159,7 +160,7 @@ class TransformationModel(Model):
         ).update()
 
         self.refdist = tfd.Normal(loc=0.0, scale=1.0)
-        """
+        """y
         The reference distribution, currently fixed to the standard normal distribution.
         """
 
