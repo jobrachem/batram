@@ -1,26 +1,26 @@
 from __future__ import annotations
 
+import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
-import tensorflow_probability.substrates.jax.distributions as tfd
 import optax
-from .node_ip import Array
-from liesel.goose.optim import optim_flat, OptimResult
+import tensorflow_probability.substrates.jax.distributions as tfd
+from liesel.goose.optim import OptimResult, optim_flat
+from liesel_ptm.nodes import TransformationDistLogDeriv
 from liesel_ptm.ptm_ls import NormalizationFn
-import jax.numpy as jnp
+
+from .node_ip import Array
 from .ppnode import (
+    ModelConst,
     OnionCoefPredictivePointProcessGP,
     ParamPredictivePointProcessGP,
-    ModelConst,
 )
-from liesel_ptm.nodes import TransformationDistLogDeriv
 
 
 class Model:
     def __init__(
         self, y: Array, tfp_dist_cls: type[tfd.Distribution], **params
     ) -> None:
-
         self.params = params
         self.tfp_dist_cls = tfp_dist_cls
 
@@ -204,7 +204,6 @@ class TransformationModel(Model):
 
 
 class ChainedModel(Model):
-
     def __init__(
         self,
         y: Array,
@@ -213,7 +212,6 @@ class ChainedModel(Model):
         coef: OnionCoefPredictivePointProcessGP,
         **params,
     ) -> None:
-
         self.param = params
 
         def normalization_and_logdet_fn(y, **params):

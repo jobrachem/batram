@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax.numpy as jnp
 import liesel.model as lsl
-import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
-import jax.numpy as jnp
-from liesel_ptm.nodes import TransformedVar, find_param
+import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel_ptm.bsplines import OnionCoef, OnionKnots
+from liesel_ptm.nodes import OnionCoefParam, TransformedVar, find_param
 
 Array = Any
 
@@ -30,7 +30,6 @@ class Kernel(lsl.Var):
         name: str = "",
         **kwargs,
     ) -> None:
-
         self.x1 = x1
         self.x2 = x2
 
@@ -59,6 +58,7 @@ class ModelConst(lsl.Var):
         self.parameter_names = []
         self.hyperparameter_names = []
 
+
 class ParamPredictivePointProcessGP(lsl.Var):
     def __init__(
         self,
@@ -69,7 +69,6 @@ class ParamPredictivePointProcessGP(lsl.Var):
         name: str = "",
         **kernel_params: lsl.Var | TransformedVar,
     ) -> None:
-
         kernel_uu = Kernel(
             x1=locs[:K, :],
             x2=locs[:K, :],
@@ -113,7 +112,6 @@ class ParamPredictivePointProcessGP(lsl.Var):
         self.hyperparameter_names = [
             find_param(param).name for param in kernel_params.values()
         ]
-
 
 
 def brownian_motion_mat(nrows: int, ncols: int):
@@ -221,7 +219,6 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
         coef_spec: OnionCoef,
         name: str = "",
     ) -> None:
-
         super().__init__(
             lsl.Calc(lambda latent: coef_spec(latent.T).T, latent_coef).update(),
             name=name,
@@ -240,11 +237,23 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
         name: str = "",
         **kernel_params: lsl.Var | TransformedVar,
     ) -> OnionCoefPredictivePointProcessGP:
-        
         coef_spec = OnionCoef(knots)
 
         latent_coef = RandomWalkParamPredictivePointProcessGP(
-            locs=locs, D=knots.nparam + 1, K=K, kernel_cls=kernel_cls, name=f"{name}_log_increments", **kernel_params
+            locs=locs,
+            D=knots.nparam + 1,
+            K=K,
+            kernel_cls=kernel_cls,
+            name=f"{name}_log_increments",
+            **kernel_params,
         )
 
         return cls(coef_spec=coef_spec, latent_coef=latent_coef, name=name)
+
+
+class ModelOnionCoef(OnionCoefParam):
+    def __init__(self, knots: OnionKnots, name: str = "") -> None:
+        super().__init__(knots=knots, name=name)
+
+        self.parameter_names = [self.log_increments.latent_var.name]
+        self.hyperparameter_names = []

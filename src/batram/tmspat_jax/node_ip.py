@@ -13,15 +13,16 @@ from functools import partial
 from typing import Any
 
 import jax
-import optax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
+import optax
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
 from liesel_ptm.ptm_ls import NormalizationFn
-from .optim import optim_flat, OptimResult
+
+from .optim import OptimResult, optim_flat
 
 Array = Any
 
@@ -441,7 +442,7 @@ class EtaParam(lsl.Var):
         self.hyperparameter_names = [
             amplitude_transformed.name,
             length_scale_transformed.name,
-            mean.name
+            mean.name,
         ]
 
 
@@ -486,7 +487,7 @@ class Model:
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
         extrap_transition_width: float = 0.3,
-        eta_fixed: bool = False
+        eta_fixed: bool = False,
     ) -> None:
         D = jnp.shape(knots)[0] - 4
         dknots = jnp.diff(knots).mean()
@@ -564,7 +565,7 @@ class Model:
             tfk.AutoCompositeTensorPsdKernel
         ] = tfk.ExponentiatedQuadratic,
         extrap_transition_width: float = 0.3,
-        eta_fixed: bool = False
+        eta_fixed: bool = False,
     ) -> Model:
         knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
         return cls(
@@ -574,13 +575,13 @@ class Model:
             K=K,
             kernel_class=kernel_class,
             extrap_transition_width=extrap_transition_width,
-            eta_fixed=eta_fixed
+            eta_fixed=eta_fixed,
         )
 
     def build_graph(self):
         self.graph = lsl.GraphBuilder().add(self.response).build_model()
         return self.graph
-    
+
     def param(self) -> list[str]:
         param = (
             self.alpha.parameter_names
@@ -590,10 +591,9 @@ class Model:
 
         if not self.eta_fixed:
             param += self.eta.parameter_names
-        
+
         return param
-    
-    
+
     def hyperparam(self) -> list[str]:
         hyperparam = (
             self.alpha.hyperparameter_names
@@ -603,16 +603,15 @@ class Model:
 
         if not self.eta_fixed:
             hyperparam += self.eta.hyperparameter_names
-        
+
         return hyperparam
 
-    
     def fit(
         self,
         graph: lsl.Model | None = None,
         graph_validation: lsl.Model | None = None,
         optimizer: optax.GradientTransformation | None = None,
-        stopper: ptm.Stopper | None = None
+        stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
         graph = self.graph if graph is None else graph
         param = self.param()
@@ -628,7 +627,7 @@ class Model:
         graph.state = result.model_state
         graph.update()
         return result
-    
+
     def normalization_and_logdet(self, y: Array) -> tuple[Array, Array]:
         _, vars_ = self.graph.copy_nodes_and_vars()
         graph_copy = lsl.GraphBuilder().add(vars_["response"]).build_model()
@@ -637,14 +636,17 @@ class Model:
         z = graph_copy.vars["normalization"].value
         logdet = jnp.log(graph_copy.vars["normalization_deriv"].value)
         return z, logdet
-    
+
     def normalization_inverse(self, z: Array) -> Array:
         hfn = NormalizationFn(
             knots=self.knots, order=3, transition_width=self.extrap_transition_width
         )
 
         y = hfn.inverse(
-            z=z.T, coef=self.coef.update().value, norm_mean=jnp.zeros(1), norm_sd=jnp.ones(1)
+            z=z.T,
+            coef=self.coef.update().value,
+            norm_mean=jnp.zeros(1),
+            norm_sd=jnp.ones(1),
         ).T
 
         return y

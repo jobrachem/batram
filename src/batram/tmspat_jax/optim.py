@@ -7,10 +7,9 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pandas as pd
-
-from liesel.model import Model, Node, Var
 from liesel.goose.interface import LieselInterface
 from liesel.goose.types import Array, KeyArray, ModelState, Position
+from liesel.model import Model, Node, Var
 from tqdm import tqdm
 
 
@@ -422,7 +421,10 @@ def optim_flat(
     # Define while loop body
     progress_bar = tqdm(
         total=stopper.max_iter - 1,
-        desc=f"Training loss: {loss_train_start:.3f}, Validation loss: {loss_validation_start:.3f}",
+        desc=(
+            f"Training loss: {loss_train_start:.3f}, Validation loss:"
+            f" {loss_validation_start:.3f}"
+        ),
         position=0,
         leave=True,
     )

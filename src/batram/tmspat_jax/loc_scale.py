@@ -4,11 +4,12 @@ import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
+import optax
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
-import optax
-from .node_ip import Kernel, Kernel2, Array
-from .optim import optim_flat, OptimResult
+
+from .node_ip import Array, Kernel, Kernel2
+from .optim import OptimResult, optim_flat
 
 
 class LocationParam(lsl.Var):
@@ -72,7 +73,8 @@ class LocationParam(lsl.Var):
             return constant + jnp.r_[u, alpha]
 
         super().__init__(
-            lsl.Calc(_compute_param, constant, latent_param, kernel_uu, kernel_du), name=name
+            lsl.Calc(_compute_param, constant, latent_param, kernel_uu, kernel_du),
+            name=name,
         )
         self.parameter_names = [latent_param.name]
         self.hyperparameter_names = [
@@ -143,7 +145,8 @@ class ScaleParam(lsl.Var):
             return constant + jnp.exp(jnp.r_[u, alpha])
 
         super().__init__(
-            lsl.Calc(_compute_param, constant, latent_param, kernel_uu, kernel_du), name=name
+            lsl.Calc(_compute_param, constant, latent_param, kernel_uu, kernel_du),
+            name=name,
         )
         self.parameter_names = [latent_param.name]
         self.hyperparameter_names = [
@@ -173,15 +176,14 @@ class Model:
 
         self.graph = None
 
-
     def build_graph(self):
         self.graph = lsl.GraphBuilder().add(self.response).build_model()
         return self.graph
-    
+
     def param(self):
         param = self.loc.parameter_names + self.scale.parameter_names
         return param
-    
+
     def hyperparam(self):
         hyperparam = self.loc.hyperparameter_names + self.scale.hyperparameter_names
         return hyperparam
@@ -191,7 +193,7 @@ class Model:
         graph: lsl.Model | None = None,
         graph_validation: lsl.Model | None = None,
         optimizer: optax.GradientTransformation | None = None,
-        stopper: ptm.Stopper | None = None
+        stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
         graph = self.graph if graph is None else graph
 

@@ -8,20 +8,27 @@ Nodes for inducing points version.
 
 from __future__ import annotations
 
+from enum import Enum, auto
 from typing import Any
 
 import jax
-import optax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
+import optax
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 from liesel.goose.types import ModelState
+from liesel_ptm.bsplines import (
+    Knots,
+    OnionCoef,
+    SimpleOnionCoef,
+    SimpleStreamCoef,
+    StreamCoef,
+)
 from liesel_ptm.ptm_ls import NormalizationFn
-from liesel_ptm.bsplines import OnionCoef, Knots, StreamCoef, SimpleOnionCoef, SimpleStreamCoef
-from .optim import optim_flat, OptimResult
-from enum import Enum, auto
+
+from .optim import OptimResult, optim_flat
 
 Array = Any
 
@@ -181,8 +188,6 @@ class DeltaParam(lsl.Var):
 
         self.amplitude = amplitude
         self.length_scale = length_scale
-
-        
 
         kernel_uu = Kernel(
             x=locs[:K, :],
@@ -502,7 +507,6 @@ class TransformationCoef(lsl.Var):
         shape_coef: lsl.Var,
         coef_spec: OnionCoef | StreamCoef | SimpleOnionCoef | SimpleStreamCoef,
     ) -> None:
-
         alpha = (
             alpha
             if alpha is not None
@@ -554,8 +558,12 @@ class Model:
         else:
             self.eta = EtaParam(locs, K=K, kernel_class=kernel_class).update()
         self.delta = DeltaParam(
-            locs, self.knots.nparam + 1, self.eta, K=K, kernel_class=kernel_class,
-            smoothing_prior=smoothing_prior
+            locs,
+            self.knots.nparam + 1,
+            self.eta,
+            K=K,
+            kernel_class=kernel_class,
+            smoothing_prior=smoothing_prior,
         ).update()
 
         if include_alpha and not shared_hyperparameters_alpha:

@@ -316,6 +316,7 @@ def test_predict_normalization():
     assert jnp.allclose(z, y, atol=1e-5)
     assert jnp.allclose(z_deriv, 1.0, atol=1e-5)
 
+
 def test_predict_normalization_method():
     nloc = 15
     nobs = 50
@@ -391,6 +392,7 @@ def test_predict_normalization_inverse_nonlinear():
     y_new = tm.predict_normalization_inverse(z, coef=model.coef.value, model=model)
     assert jnp.allclose(y, y_new, atol=1e-3)
 
+
 def test_normalization_inverse_method():
     nloc = 15
     nobs = 50
@@ -419,7 +421,6 @@ def test_normalization_inverse_method():
 
     y_new = model.normalization_inverse(z)
     assert jnp.allclose(y, y_new, atol=1e-3)
-
 
 
 def test_optim():
