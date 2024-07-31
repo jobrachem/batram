@@ -58,6 +58,17 @@ class ModelConst(lsl.Var):
         self.parameter_names = []
         self.hyperparameter_names = []
 
+class ModelVar(TransformedVar):
+    def __init__(
+        self,
+        value: Any,
+        bijector: tfb.Bijector | None = tfb.Identity(),
+        name: str = "",
+    ) -> None:
+        super().__init__(value=value, bijector=bijector, name=name)
+        self.parameter_names = [find_param(self).name]
+        self.hyperparameter_names = []
+
 
 class ParamPredictivePointProcessGP(lsl.Var):
     def __init__(
