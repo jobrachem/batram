@@ -117,25 +117,9 @@ def test_legmods_score(simple_data: Data) -> None:
 
     tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
     with torch.no_grad():
-        score = tm.score(simple_data.response[0, :])
+        score = tm.score(simple_data.response[[0], :])
 
     assert score == pytest.approx(-49.6006, abs=1e-3)
-
-
-def test_legmods_z_log_score(simple_data: Data) -> None:
-    theta_init = torch.tensor(
-        [simple_data.response[:, 0].square().mean().log(), 0.3, 0.0, 0.0, 0.1, -1.0]
-    )
-
-    tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
-
-    with torch.no_grad():
-        score = tm.score(simple_data.response[0, :])
-        z, z_logdet = tm.compute_z_and_logdet(simple_data.response[0, :])
-        score_z = tm.log_score_z(z, z_logdet)
-
-    assert score_z == pytest.approx(-49.6006, abs=1e-3)
-    assert score == pytest.approx(score_z, abs=1e-3)
 
 
 def test_inverse_map(simple_data: Data) -> None:
@@ -145,63 +129,16 @@ def test_inverse_map(simple_data: Data) -> None:
 
     tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
 
-    for i in range(3):
+    for _ in range(3):
         with torch.no_grad():
-            y = simple_data.response[i, :]
-            z, z_logdet = tm.compute_z_and_logdet(y)
+            z, _ = tm.compute_z_and_logdet(simple_data.response)
             yt = tm.inverse_map(torch.as_tensor(z))
 
-            score_z = tm.log_score_z(z, z_logdet)
+            score_z = tm.score(simple_data.response)
             score = tm.score(yt)
 
-        assert np.allclose(y, yt, atol=1e-6)
+        assert np.allclose(yt, simple_data.response, atol=1e-6)
         assert score == pytest.approx(score_z, abs=1e-3)
-
-
-def test_legmods_z_log_score_batched(simple_data: Data) -> None:
-    theta_init = torch.tensor(
-        [simple_data.response[:, 0].square().mean().log(), 0.3, 0.0, 0.0, 0.1, -1.0]
-    )
-
-    tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
-
-    with torch.no_grad():
-        score0 = tm.score(simple_data.response[0, :])
-        score4 = tm.score(simple_data.response[4, :])
-        score13 = tm.score(simple_data.response[13, :])
-
-        z, z_logdet = tm.compute_z_and_logdet_batched(simple_data.response[0:14, :])
-        score_z = tm.log_score_z(z, z_logdet, dim=1)
-
-    assert score0 == pytest.approx(score_z[0], abs=1e-3)
-    assert score4 == pytest.approx(score_z[4], abs=1e-3)
-    assert score13 == pytest.approx(score_z[13], abs=1e-3)
-
-
-def test_legmods_score_with_xfix(simple_data: Data) -> None:
-    tm = SimpleTM(simple_data)
-    x_fix = simple_data.response[0, :]
-    with torch.no_grad():
-        score = tm.score(simple_data.response[0, :], x_fix)
-    assert score == pytest.approx(0.0, 1e-5)
-
-
-def test_legmods_score_last_index(simple_data: Data) -> None:
-    tm = SimpleTM(simple_data)
-    last_index = 50
-    obs = simple_data.response[0, :]
-    with torch.no_grad():
-        score = tm.score(obs, last_ind=last_index)
-    assert score == pytest.approx(-31.9082, 1e-5)
-
-
-def test_legmods_score_xfix_greater_than_last_ind(simple_data: Data) -> None:
-    tm = SimpleTM(simple_data)
-    last_index = 5
-    obs = simple_data.response[0, :]
-    x_fix = simple_data.response[1, :6]
-    with torch.no_grad(), pytest.raises(ValueError):
-        tm.score(obs, x_fix, last_ind=last_index)
 
 
 def test_legmods_nugget_mean(simple_data: Data) -> None:

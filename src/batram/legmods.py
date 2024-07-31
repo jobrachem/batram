@@ -694,6 +694,7 @@ class SimpleTM(torch.nn.Module):
     def sample_from_z(
         self,
         z,
+        seed: int | None = None
     ):
         """
         I'm not sure where this should exactly be implemented.
@@ -704,9 +705,10 @@ class SimpleTM(torch.nn.Module):
         In any case, this class should expose an interface.
         """
 
+        if seed is not None:
+            torch.manual_seed(seed)
+
         num_samples = z.shape[0]
-        x_fix = torch.tensor([])
-        last_ind = None
 
         augmented_data: AugmentedData = self.augment_data(self.data, None)
 
@@ -726,13 +728,10 @@ class SimpleTM(torch.nn.Module):
         alpha_post = tmp_res.alpha_post
         n, N = data.shape
         m = NN.shape[1]
-        if last_ind is None:
-            last_ind = N
         # loop over variables/locations
         x_new = torch.empty((num_samples, N))
-        x_new[:, : x_fix.size(0)] = x_fix.repeat(num_samples, 1)
-        x_new[:, x_fix.size(0) :] = 0.0
-        for i in range(x_fix.size(0), last_ind):
+        
+        for i in range(N):
             # predictive distribution for current sample
             if i == 0:
                 cStar = torch.zeros((num_samples, n))
@@ -747,6 +746,7 @@ class SimpleTM(torch.nn.Module):
                 prVar = self.kernel._kernel_fun(
                     XPred, sigmas[i], nugget_mean[i]
                 ).squeeze((1, 2))
+
             cChol = torch.linalg.solve_triangular(
                 chol[i, :, :], cStar.unsqueeze(-1), upper=False
             ).squeeze(-1)
@@ -763,14 +763,12 @@ class SimpleTM(torch.nn.Module):
     def inverse_map(
         self,
         z,
-        last_ind=None,
     ):
         """
         Code mostly copy-and-pasted from cond_samp.
         """
 
         num_samples = z.shape[0] if len(z.shape) > 1 else 1
-        x_fix = torch.tensor([])
 
         augmented_data: AugmentedData = self.augment_data(self.data, None)
 
@@ -790,13 +788,9 @@ class SimpleTM(torch.nn.Module):
         alpha_post = tmp_res.alpha_post
         n, N = data.shape
         m = NN.shape[1]
-        if last_ind is None:
-            last_ind = N
         # loop over variables/locations
         x_new = torch.empty((num_samples, N))
-        x_new[:, : x_fix.size(0)] = x_fix.repeat(num_samples, 1)
-        x_new[:, x_fix.size(0) :] = 0.0
-        for i in range(x_fix.size(0), last_ind):
+        for i in range(N):
             # predictive distribution for current sample
             if i == 0:
                 cStar = torch.zeros((num_samples, n))
@@ -842,92 +836,6 @@ class SimpleTM(torch.nn.Module):
 
         return x_new.squeeze()
 
-    def score(self, obs, x_fix=torch.tensor([]), last_ind=None):
-        """
-        I'm not sure where this should exactly be implemented.
-
-        I guess, best ist in the likelihood nn.Module but it needs access to the
-        kernel module as well.
-
-        In any case, this class should expose an interface.
-
-        Also, this function shares a lot of code with cond sample. that should
-        be refactored
-        """
-
-        if isinstance(last_ind, int) and last_ind < x_fix.size(-1):
-            raise ValueError("last_ind must be larger than conditioned field x_fix.")
-
-        augmented_data: AugmentedData = self.augment_data(self.data, None)
-
-        data = self.data.response
-        NN = self.data.conditioning_sets
-        # response = augmented_data.response
-        # response_neighbor_values = augmented_data.response_neighbor_values
-        theta = torch.tensor(
-            [
-                *self.nugget.nugget_params.detach(),
-                self.kernel.theta_q.detach(),
-                *self.kernel.sigma_params.detach(),
-                self.kernel.lengthscale.detach(),
-            ]
-        )
-        scales = augmented_data.scales
-        sigmas = self.kernel._sigmas(scales)
-        self.intloglik.nug_mult
-        # nugMult = self.intloglik.nugMult  # not used
-        smooth = self.kernel.smooth
-
-        nug_mean = self.nugget(augmented_data)
-        kernel_result = self.kernel.forward(augmented_data, nug_mean)
-        nugget_mean = kernel_result.nug_mean
-        chol = kernel_result.GChol
-        tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
-        y_tilde = tmp_res.y_tilde
-        beta_post = tmp_res.beta_post
-        alpha_post = tmp_res.alpha_post
-        n, N = data.shape
-        m = NN.shape[1]
-        if last_ind is None:
-            last_ind = N
-        # loop over variables/locations
-        score = torch.zeros(N)
-        for i in range(x_fix.size(0), last_ind):
-            # predictive distribution for current sample
-            if i == 0:
-                cStar = torch.zeros(n)
-                prVar = torch.tensor(0.0)
-            else:
-                ncol = min(i, m)
-                X = data[:, NN[i, :ncol]]
-                XPred = obs[NN[i, :ncol]].unsqueeze(
-                    0
-                )  # this line is different than in cond_sampl
-                cStar = kernel_fun(
-                    XPred, theta, sigmas[i], smooth, nugget_mean[i], X
-                ).squeeze()
-                prVar = kernel_fun(
-                    XPred, theta, sigmas[i], smooth, nugget_mean[i]
-                ).squeeze()
-            cChol = torch.linalg.solve_triangular(
-                chol[i, :, :], cStar.unsqueeze(1), upper=False
-            ).squeeze()
-            meanPred = y_tilde[i, :].mul(cChol).sum()
-
-            varPredNoNug = prVar - cChol.square().sum()
-            if varPredNoNug < 0.0:
-                warnings.warn("Negative v(y_1:i-1) clipped to zero.")
-                varPredNoNug = torch.clip(varPredNoNug, 0.0)
-
-            # score
-            initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
-            STDist = StudentT(2 * alpha_post[i])
-            score[i] = (
-                STDist.log_prob((obs[i] - meanPred) / initVar.sqrt())
-                - 0.5 * initVar.log()
-            )
-
-        return score[x_fix.size(0) :].sum()
 
     def fit(
         self,
@@ -1072,289 +980,96 @@ class SimpleTM(torch.nn.Module):
             tracked_chain=tracked_chain,
         )
 
-    def compute_z_and_logdet(self, obs, x_fix=torch.tensor([]), last_ind=None):
-        if isinstance(last_ind, int) and last_ind < x_fix.size(-1):
-            raise ValueError("last_ind must be larger than conditioned field x_fix.")
-
+    def compute_z_and_logdet(self, obs):
         augmented_data: AugmentedData = self.augment_data(self.data, None)
 
         data = self.data.response
         NN = self.data.conditioning_sets
-        # response = augmented_data.response
-        # response_neighbor_values = augmented_data.response_neighbor_values
-        theta = torch.tensor(
-            [
-                *self.nugget.nugget_params.detach(),
-                self.kernel.theta_q.detach(),
-                *self.kernel.sigma_params.detach(),
-                self.kernel.lengthscale.detach(),
-            ]
-        )
         scales = augmented_data.scales
         sigmas = self.kernel._sigmas(scales)
-        self.intloglik.nug_mult
-        # nugMult = self.intloglik.nugMult  # not used
-        smooth = self.kernel.smooth
 
         nug_mean = self.nugget(augmented_data)
         kernel_result = self.kernel.forward(augmented_data, nug_mean)
         nugget_mean = kernel_result.nug_mean
         chol = kernel_result.GChol
+
         tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
+        
         y_tilde = tmp_res.y_tilde
         beta_post = tmp_res.beta_post
         alpha_post = tmp_res.alpha_post
+        
         n, N = data.shape
+        n_input, _ = obs.shape
+
         m = NN.shape[1]
-        if last_ind is None:
-            last_ind = N
-
+        
         # loop over variables/locations
-        z = np.zeros(N)
-        z_logdet = np.zeros(N)
+        z = np.zeros((n_input, N))
+        z_logdet = np.zeros((n_input, N))
 
-        for i in range(x_fix.size(0), last_ind):
+        for i in range(N):
+
             # predictive distribution for current sample
             if i == 0:
-                cStar = torch.zeros(n)
-                prVar = torch.tensor(0.0)
+                cStar = torch.zeros((n_input, n))
+                prVar = torch.zeros((n_input,))
+
             else:
                 ncol = min(i, m)
                 X = data[:, NN[i, :ncol]]
-                XPred = obs[NN[i, :ncol]].unsqueeze(
-                    0
-                )  # this line is different than in cond_sampl
-                cStar = kernel_fun(
-                    XPred, theta, sigmas[i], smooth, nugget_mean[i], X
-                ).squeeze()
-                prVar = kernel_fun(
-                    XPred, theta, sigmas[i], smooth, nugget_mean[i]
-                ).squeeze()
-            cChol = torch.linalg.solve_triangular(
-                chol[i, :, :], cStar.unsqueeze(1), upper=False
-            ).squeeze()
-            meanPred = y_tilde[i, :].mul(cChol).sum()
+                XPred = obs[:, NN[i, :ncol]].unsqueeze(1)
+                cStar = self.kernel._kernel_fun(
+                    XPred, sigmas[i], nugget_mean[i], X
+                ).squeeze(1)
+                prVar = self.kernel._kernel_fun(
+                    XPred, sigmas[i], nugget_mean[i]
+                ).squeeze((1, 2))
 
-            varPredNoNug = prVar - cChol.square().sum()
-            if varPredNoNug < 0.0:
+            cChol = torch.linalg.solve_triangular(
+                chol[i, :, :], cStar.unsqueeze(-1), upper=False
+            ).squeeze(-1)
+
+            meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
+
+            varPredNoNug = prVar - cChol.square().sum(1)
+            
+            if torch.any(varPredNoNug < 0.0):
                 warnings.warn("Negative v(y_1:i-1) clipped to zero.")
                 varPredNoNug = torch.clip(varPredNoNug, 0.0)
 
             # score
             initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
 
-            z_tilde = (obs[i] - meanPred) / initVar.sqrt()
+            z_tilde = (obs[:, i] - meanPred) / initVar.sqrt()
 
             # Using scipy here instead of pytorch, because pytorch does not
             # implement StudentT.cdf.
             z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
-            z[i] = stats.norm.ppf(z_t)
+            z[:, i] = stats.norm.ppf(z_t)
 
-            if np.isinf(z[i]):
+            if np.any(np.isinf(z[:, i])):
+                j = np.argwhere(np.isinf(z[:, i]))
+                
                 warnings.warn(
-                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f},"
-                    f" \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}\n\t{obs[i]=:.3f},"
-                    f" \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f},"
+                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde[j]=:.3f}, \n\t{z_t[j]=:.3f},"
+                    f" \n\t{z[j,i]=:.3f}, \n\t{z_logdet[j,i]=}\n\t{obs[j,i]=:.3f},"
+                    f" \n\t{meanPred[j]=:.3f}, \n\t{initVar[j].sqrt()=:.3f},"
                     f" \n\t{2*alpha_post[i]=:.3f}"
                 )
-                z[i] = stats.norm.ppf(1 - 1e-16)
+                z[:, i] = stats.norm.ppf(1 - 1e-16)
 
-            z_logdet[i] = (
+            z_logdet[:, i] = (
                 -0.5 * initVar.log()
                 + stats.t.logpdf(z_tilde, df=2 * alpha_post[i])
-                - stats.norm.logpdf(z[i])
-            )
-
-            if np.isinf(z[i]) or np.isinf(z_logdet[i]):
-                warnings.warn(
-                    f"Inf IN CLIPPED VALUES encountered! \n\t{i=}, \n\t{z_tilde=:.3f},"
-                    f" \n\t{z_t=:.3f}, \n\t{z[i]=:.3f},"
-                    f" \n\t{z_logdet[i]=}\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f},"
-                    f" \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
-                )
-
-        return z, z_logdet
-
-    def compute_quantities(self, obs, x_fix=torch.tensor([]), last_ind=None):
-        if isinstance(last_ind, int) and last_ind < x_fix.size(-1):
-            raise ValueError("last_ind must be larger than conditioned field x_fix.")
-
-        augmented_data: AugmentedData = self.augment_data(self.data, None)
-
-        data = self.data.response
-        NN = self.data.conditioning_sets
-        # response = augmented_data.response
-        # response_neighbor_values = augmented_data.response_neighbor_values
-        theta = torch.tensor(
-            [
-                *self.nugget.nugget_params.detach(),
-                self.kernel.theta_q.detach(),
-                *self.kernel.sigma_params.detach(),
-                self.kernel.lengthscale.detach(),
-            ]
-        )
-        scales = augmented_data.scales
-        sigmas = self.kernel._sigmas(scales)
-        self.intloglik.nug_mult
-        # nugMult = self.intloglik.nugMult  # not used
-        smooth = self.kernel.smooth
-
-        nug_mean = self.nugget(augmented_data)
-        kernel_result = self.kernel.forward(augmented_data, nug_mean)
-        nugget_mean = kernel_result.nug_mean
-        chol = kernel_result.GChol
-        tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
-        y_tilde = tmp_res.y_tilde
-        beta_post = tmp_res.beta_post
-        alpha_post = tmp_res.alpha_post
-        n, N = data.shape
-        m = NN.shape[1]
-        if last_ind is None:
-            last_ind = N
-
-        # loop over variables/locations
-        z = np.zeros(N)
-        z_logdet = np.zeros(N)
-        means = np.zeros(N)
-        residual_scales = np.zeros(N)
-
-        z_tildes = np.zeros(N)
-        z_tilde_logdet = np.zeros(N)
-
-        for i in range(x_fix.size(0), last_ind):
-            # predictive distribution for current sample
-            if i == 0:
-                cStar = torch.zeros(n)
-                prVar = torch.tensor(0.0)
-            else:
-                ncol = min(i, m)
-                X = data[:, NN[i, :ncol]]
-                XPred = obs[NN[i, :ncol]].unsqueeze(
-                    0
-                )  # this line is different than in cond_sampl
-                cStar = kernel_fun(
-                    XPred, theta, sigmas[i], smooth, nugget_mean[i], X
-                ).squeeze()
-                prVar = kernel_fun(
-                    XPred, theta, sigmas[i], smooth, nugget_mean[i]
-                ).squeeze()
-            cChol = torch.linalg.solve_triangular(
-                chol[i, :, :], cStar.unsqueeze(1), upper=False
-            ).squeeze()
-            meanPred = y_tilde[i, :].mul(cChol).sum()
-
-            varPredNoNug = prVar - cChol.square().sum()
-            if varPredNoNug < 0.0:
-                warnings.warn("Negative v(y_1:i-1) clipped to zero.")
-                varPredNoNug = torch.clip(varPredNoNug, 0.0)
-
-            # score
-            initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
-
-            z_tilde = (obs[i] - meanPred) / initVar.sqrt()
-
-            z_tildes[i] = z_tilde
-            z_tilde_logdet[i] = -0.5 * initVar.log()
-
-            means[i] = meanPred
-            residual_scales[i] = initVar.sqrt()
-
-            # Using scipy here instead of pytorch, because pytorch does not
-            # implement StudentT.cdf.
-            z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
-            z[i] = stats.norm.ppf(z_t)
-
-            if np.isinf(z[i]):
-                warnings.warn(
-                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde=:.3f}, \n\t{z_t=:.3f},"
-                    f" \n\t{z[i]=:.3f}, \n\t{z_logdet[i]=}\n\t{obs[i]=:.3f},"
-                    f" \n\t{meanPred=:.3f}, \n\t{initVar.sqrt()=:.3f},"
-                    f" \n\t{2*alpha_post[i]=:.3f}"
-                )
-                z[i] = stats.norm.ppf(1 - 1e-16)
-
-            z_logdet[i] = (
-                -0.5 * initVar.log()
-                + stats.t.logpdf(z_tilde, df=2 * alpha_post[i])
-                - stats.norm.logpdf(z[i])
-            )
-
-            if np.isinf(z[i]) or np.isinf(z_logdet[i]):
-                warnings.warn(
-                    f"Inf IN CLIPPED VALUES encountered! \n\t{i=}, \n\t{z_tilde=:.3f},"
-                    f" \n\t{z_t=:.3f}, \n\t{z[i]=:.3f},"
-                    f" \n\t{z_logdet[i]=}\n\t{obs[i]=:.3f}, \n\t{meanPred=:.3f},"
-                    f" \n\t{initVar.sqrt()=:.3f}, \n\t{2*alpha_post[i]=:.3f}"
-                )
-
-        return TransportMapQuantities(
-            z=z,
-            z_logdet=z_logdet,
-            z_tilde=z_tildes,
-            z_tilde_logdet=z_tilde_logdet,
-            mean=means,
-            scale=residual_scales,
-        )
-
-    def compute_quantities_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
-        z = np.zeros_like(obs)
-        z_logdet = np.zeros_like(obs)
-        z_tilde = np.zeros_like(obs)
-        z_tilde_logdet = np.zeros_like(obs)
-        mean = np.zeros_like(obs)
-        scale = np.zeros_like(obs)
-
-        for i in range(obs.shape[0]):
-            quant_i = self.compute_quantities(obs[i, :], x_fix, last_ind)
-
-            z[i, :] = quant_i.z
-            z_logdet[i, :] = quant_i.z_logdet
-            z_tilde[i, :] = quant_i.z_tilde
-            z_tilde_logdet[i, :] = quant_i.z_tilde_logdet
-            mean[i, :] = quant_i.mean
-            scale[i, :] = quant_i.scale
-
-        return TransportMapQuantities(
-            z=z,
-            z_logdet=z_logdet,
-            z_tilde=z_tilde,
-            z_tilde_logdet=z_tilde_logdet,
-            mean=mean,
-            scale=scale,
-        )
-
-    def compute_z_and_logdet_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
-        z = np.zeros_like(obs)
-        z_logdet = np.zeros_like(obs)
-
-        for i in range(obs.shape[0]):
-            z[i, :], z_logdet[i, :] = self.compute_z_and_logdet(
-                obs[i, :], x_fix, last_ind
+                - stats.norm.logpdf(z[:, i])
             )
 
         return z, z_logdet
 
-    def score_batched(self, obs, x_fix=torch.tensor([]), last_ind=None):
-        score = torch.zeros(obs.shape[0])
-
-        for i in range(obs.shape[0]):
-            score[i] = self.score(obs[i, :], x_fix, last_ind)
-
-        return score
-
-    def log_score_z(self, z, z_logdet, dim=None):
-        """z and z_logdet are assumed to be numpy arrays here."""
+    def score(self, obs, dim=None):
+        z, z_logdet = self.compute_z_and_logdet(obs)
         return (stats.norm.logpdf(z) + z_logdet).sum(axis=dim)
-
-
-@dataclass
-class TransportMapQuantities:
-    z: Array
-    z_logdet: Array
-    z_tilde: Array
-    z_tilde_logdet: Array
-    mean: Array
-    scale: Array
 
 
 @dataclass
