@@ -9,9 +9,11 @@ import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 import batram.tmspat_jax.model_onion2 as mo2
 from batram.tmspat_jax.model import ChainedModel, Model, TransformationModel
 from batram.tmspat_jax.ppnode import (
+    ModelOnionCoef,
     OnionCoef,
     OnionCoefPredictivePointProcessGP,
     OnionKnots,
+    ParamPredictivePointProcessGP,
     RandomWalkParamPredictivePointProcessGP,
     TransformedVar,
 )
@@ -186,6 +188,62 @@ class TestTransformationModel:
 
         assert not jnp.any(jnp.isinf(model.response.value))
         assert model.response.value.shape == y.shape
+
+    def test_with_intercept_and_slope(self):
+        y = jrd.normal(key, shape=(20, 50))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            locs,
+            K=5,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="a1"),
+            length_scale=lsl.param(1.0, name="l1"),
+        )
+
+        intercept = ParamPredictivePointProcessGP(
+            locs=locs,
+            K=5,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="a2"),
+            length_scale=lsl.param(1.0, name="l2"),
+            name="intercept",
+        )
+
+        slope = ParamPredictivePointProcessGP(
+            locs=locs,
+            K=5,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="a3"),
+            length_scale=lsl.param(1.0, name="l3"),
+            name="slope",
+        )
+
+        model = TransformationModel(
+            y, knots=knots.knots, coef=coef, intercept=intercept, slope=slope
+        )
+        assert not jnp.any(jnp.isinf(model.response.value))
+        assert model.response.value.shape == y.shape
+
+        for name in ["a1", "a2", "a3", "l1", "l2", "l3"]:
+            assert name in model.hyperparam_names()
+
+        for name in coef.parameter_names + ["intercept_latent", "slope_latent"]:
+            assert name in model.param_names()
+
+    def test_with_simple_transformation(self):
+        y = jrd.normal(key, shape=(20, 50))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        coef = ModelOnionCoef(knots, name="coef")
+        model = TransformationModel(y, knots=knots.knots, coef=coef)
+
+        assert not jnp.any(jnp.isinf(model.response.value))
+        assert model.response.value.shape == y.shape
+
+        assert model.param_names()[0] == coef.parameter_names[0]
 
 
 class TestChainedModel:
