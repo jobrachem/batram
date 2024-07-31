@@ -49,16 +49,14 @@ class Kernel(lsl.Var):
         self.update()
 
 
-class ModelParam(lsl.Var):
+class ModelConst(lsl.Var):
     def __init__(
         self,
         value: Any,
-        distribution: lsl.Dist | None = None,
         name: str = "",
     ) -> None:
-        super().__init__(value=value, distribtuion=distribution, name=name)
-        self.parameter = True
-        self.parameter_names = [self.name]
+        super().__init__(value=value, name=name)
+        self.parameter_names = []
         self.hyperparameter_names = []
 
 class ParamPredictivePointProcessGP(lsl.Var):
@@ -115,8 +113,6 @@ class ParamPredictivePointProcessGP(lsl.Var):
         self.hyperparameter_names = [
             find_param(param).name for param in kernel_params.values()
         ]
-
-
 
 
 
