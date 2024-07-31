@@ -133,8 +133,8 @@ class TransformationModel(Model):
 
         def trafo_and_deriv_fn(y, coef, intercept, slope):
             spline, spline_deriv = basis_dot_and_deriv_fn(y.T, coef.T)
-            transformed = spline * slope + intercept
-            transformation_deriv = spline_deriv * slope
+            transformed = spline.T * slope + intercept
+            transformation_deriv = spline_deriv.T * slope
             return transformed, transformation_deriv
 
         self.transformation_and_deriv = lsl.Var(
@@ -149,12 +149,12 @@ class TransformationModel(Model):
         ).update()
 
         self.transformation = lsl.Var(
-            lsl.Calc(lambda x: x[0].T, self.transformation_and_deriv),
+            lsl.Calc(lambda x: x[0], self.transformation_and_deriv),
             name="transformation",
         ).update()
 
         self.transformation_deriv = lsl.Var(
-            lsl.Calc(lambda x: x[1].T, self.transformation_and_deriv),
+            lsl.Calc(lambda x: x[1], self.transformation_and_deriv),
             name="transformation_deriv",
         ).update()
 
