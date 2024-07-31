@@ -49,6 +49,18 @@ class Kernel(lsl.Var):
         self.update()
 
 
+class ModelParam(lsl.Var):
+    def __init__(
+        self,
+        value: Any,
+        distribution: lsl.Dist | None = None,
+        name: str = "",
+    ) -> None:
+        super().__init__(value=value, distribtuion=distribution, name=name)
+        self.parameter = True
+        self.parameter_names = [self.name]
+        self.hyperparameter_names = []
+
 class ParamPredictivePointProcessGP(lsl.Var):
     def __init__(
         self,
@@ -103,6 +115,9 @@ class ParamPredictivePointProcessGP(lsl.Var):
         self.hyperparameter_names = [
             find_param(param).name for param in kernel_params.values()
         ]
+
+
+
 
 
 def brownian_motion_mat(nrows: int, ncols: int):
