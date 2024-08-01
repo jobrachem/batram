@@ -853,7 +853,7 @@ class SimpleTM(torch.nn.Module):
 
                 x_new[:, i] = meanPred + initVar.sqrt() * zt
 
-        return x_new.squeeze()
+        return x_new
 
     def fit(
         self,
