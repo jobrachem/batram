@@ -12,9 +12,9 @@ from liesel_ptm.ptm_ls import NormalizationFn
 from .node_ip import Array
 from .ppnode import (
     ModelConst,
+    ModelOnionCoef,
     OnionCoefPredictivePointProcessGP,
     ParamPredictivePointProcessGP,
-    ModelOnionCoef
 )
 
 

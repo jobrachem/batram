@@ -58,6 +58,7 @@ class ModelConst(lsl.Var):
         self.parameter_names = []
         self.hyperparameter_names = []
 
+
 class ModelVar(TransformedVar):
     def __init__(
         self,

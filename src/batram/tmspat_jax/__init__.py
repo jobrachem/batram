@@ -1,7 +1,12 @@
 from liesel_ptm import TransformedVar
 
 from .model import Model, TransformationModel
-from .ppnode import OnionCoefPredictivePointProcessGP, OnionKnots, ModelOnionCoef, ModelVar
+from .ppnode import (
+    ModelOnionCoef,
+    ModelVar,
+    OnionCoefPredictivePointProcessGP,
+    OnionKnots,
+)
 
 __all__ = [
     "Model",
@@ -10,5 +15,5 @@ __all__ = [
     "OnionKnots",
     "ModelOnionCoef",
     "TransformedVar",
-    "ModelVar"
+    "ModelVar",
 ]
