@@ -3,6 +3,7 @@ import pickle
 
 import numpy as np
 import pytest
+import scipy
 import torch
 import veccs.orderings
 
@@ -15,6 +16,7 @@ from batram.legmods import (
     OldTransportMapKernel,
     SimpleTM,
     TransportMapKernel,
+    t_score_to_z_score_hill,
 )
 
 
@@ -292,3 +294,23 @@ def test_optim_simNR900() -> None:
         warnings.simplefilter("ignore")
         res = tm.fit(100, 1.0, test_data=tm.data, optimizer=opt, silent=True)
     assert res.test_losses[-1] == pytest.approx(10055.03, rel=3e-3)  # type: ignore
+
+
+@pytest.mark.parametrize(
+    "start,end,df",
+    [
+        (-3.0, 3.0, 5),
+        (-3.0, 3.0, 10),
+        (-3.0, 3.0, 20),
+        (-10.0, 10.0, 5),
+        (-10.0, 10.0, 10),
+        (-10.0, 10.0, 20),
+    ],
+)
+def test_t_score_to_z_score(start, end, df) -> None:
+    t_scores = torch.linspace(start, end, 20)
+    z_score_approx = t_score_to_z_score_hill(t_scores, df=df)
+
+    z_score_exact = scipy.stats.norm.ppf(scipy.stats.t.cdf(t_scores, df=df))
+
+    assert np.allclose(z_score_approx, z_score_exact, atol=1e-4)

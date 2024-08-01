@@ -13,7 +13,6 @@ from matplotlib.axes import Axes as MPLAxes
 from pyro.distributions import InverseGamma
 from scipy import stats
 from torch.distributions import Normal
-from torch.distributions.studentT import StudentT
 from tqdm import tqdm
 
 from .base_functions import compute_scale
@@ -49,6 +48,30 @@ def varscale_fun(i, theta, scales):
 
 def con_fun(i, theta, scales):
     return torch.exp(torch.log(scales[i]).mul(theta[9]).add(theta[8]))
+
+
+def t_score_to_z_score_hill(x, df):
+    """
+    Z-score equivalents for t distribution deviates using Hill's 1970 approximation.
+
+    Hill, G. W. (1970). Algorithm 396: Student's t-quantiles.
+    Communications of the ACM, 13(10), 619-620.
+
+    The approximation requires df > 0.5 and gives good accuracy for df >= 2.
+
+    Python implementation of the functionality from the R package 'limma':
+    https://bioconductor.org/packages/release/bioc/html/limma.html
+    """
+
+    A = df - 0.5
+    B = 48 * A * A
+    z = A * torch.log1p((x / df) * x)
+    z = (
+        ((((-0.4 * z - 3.3) * z - 24) * z - 85.5) / (0.8 * z * z + 100 + B) + z + 3) / B
+        + 1
+    ) * torch.sqrt(z)
+
+    return z * torch.sign(x)
 
 
 def m_threshold(theta, m_max) -> torch.Tensor:
@@ -691,11 +714,7 @@ class SimpleTM(torch.nn.Module):
 
         return x_new
 
-    def sample_from_z(
-        self,
-        z,
-        seed: int | None = None
-    ):
+    def sample_from_z(self, z, seed: int | None = None):
         """
         I'm not sure where this should exactly be implemented.
 
@@ -730,7 +749,7 @@ class SimpleTM(torch.nn.Module):
         m = NN.shape[1]
         # loop over variables/locations
         x_new = torch.empty((num_samples, N))
-        
+
         for i in range(N):
             # predictive distribution for current sample
             if i == 0:
@@ -835,7 +854,6 @@ class SimpleTM(torch.nn.Module):
                 x_new[:, i] = meanPred + initVar.sqrt() * zt
 
         return x_new.squeeze()
-
 
     def fit(
         self,
@@ -994,22 +1012,21 @@ class SimpleTM(torch.nn.Module):
         chol = kernel_result.GChol
 
         tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
-        
+
         y_tilde = tmp_res.y_tilde
         beta_post = tmp_res.beta_post
         alpha_post = tmp_res.alpha_post
-        
+
         n, N = data.shape
         n_input, _ = obs.shape
 
         m = NN.shape[1]
-        
+
         # loop over variables/locations
         z = np.zeros((n_input, N))
         z_logdet = np.zeros((n_input, N))
 
         for i in range(N):
-
             # predictive distribution for current sample
             if i == 0:
                 cStar = torch.zeros((n_input, n))
@@ -1033,7 +1050,7 @@ class SimpleTM(torch.nn.Module):
             meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
 
             varPredNoNug = prVar - cChol.square().sum(1)
-            
+
             if torch.any(varPredNoNug < 0.0):
                 warnings.warn("Negative v(y_1:i-1) clipped to zero.")
                 varPredNoNug = torch.clip(varPredNoNug, 0.0)
@@ -1045,12 +1062,15 @@ class SimpleTM(torch.nn.Module):
 
             # Using scipy here instead of pytorch, because pytorch does not
             # implement StudentT.cdf.
-            z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
-            z[:, i] = stats.norm.ppf(z_t)
+            # z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
+            # z[:, i] = stats.norm.ppf(z_t)
+
+            # numerically more stable approximation of the above
+            z[..., i] = t_score_to_z_score_hill(z_tilde, df=2 * alpha_post[i])
 
             if np.any(np.isinf(z[:, i])):
                 n_inf = sum(np.isinf(z[:, i]))
-                
+
                 warnings.warn(f"Inf encountered during map evaluation! N inf = {n_inf}")
                 z[:, i] = stats.norm.ppf(1 - 1e-16)
 
