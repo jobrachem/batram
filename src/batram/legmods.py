@@ -828,7 +828,7 @@ class SimpleTM(torch.nn.Module):
                 zt = stats.t.ppf(pnorm, df=2 * alpha_post[i])
 
                 if np.any(np.isinf(pnorm)):
-                    warnings.warn(f"Inf encouncetered, {i=}, {pnorm=}, {zt=}.")
+                    warnings.warn("Inf encouncetered during inversion!")
                     indices = np.isinf(pnorm).nonzero()
                     zt[indices] = stats.t.ppf(1 - 1e-6, df=2 * alpha_post[i])
 
@@ -1049,14 +1049,9 @@ class SimpleTM(torch.nn.Module):
             z[:, i] = stats.norm.ppf(z_t)
 
             if np.any(np.isinf(z[:, i])):
-                j = np.argwhere(np.isinf(z[:, i]))
+                n_inf = sum(np.isinf(z[:, i]))
                 
-                warnings.warn(
-                    f"Inf encountered! \n\t{i=}, \n\t{z_tilde[j]=:.3f}, \n\t{z_t[j]=:.3f},"
-                    f" \n\t{z[j,i]=:.3f}, \n\t{z_logdet[j,i]=}\n\t{obs[j,i]=:.3f},"
-                    f" \n\t{meanPred[j]=:.3f}, \n\t{initVar[j].sqrt()=:.3f},"
-                    f" \n\t{2*alpha_post[i]=:.3f}"
-                )
+                warnings.warn(f"Inf encountered during map evaluation! N inf = {n_inf}")
                 z[:, i] = stats.norm.ppf(1 - 1e-16)
 
             z_logdet[:, i] = (
