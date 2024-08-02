@@ -844,11 +844,11 @@ class SimpleTM(torch.nn.Module):
 
                 meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
                 varPredNoNug = prVar - cChol.square().sum(1)
-                
+
                 if torch.any(varPredNoNug < 0.0):
                     warnings.warn("Negative v(y_1:i-1) clipped to zero.")
                     varPredNoNug = torch.clip(varPredNoNug, 0.0)
-                
+
                 initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
 
                 pnorm = stats.norm.cdf(z[..., i])
