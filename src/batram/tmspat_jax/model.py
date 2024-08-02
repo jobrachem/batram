@@ -10,6 +10,7 @@ from liesel_ptm.nodes import TransformationDistLogDeriv
 from liesel_ptm.ptm_ls import NormalizationFn
 
 from .node_ip import Array
+from .optim import optim_loc_batched
 from .ppnode import (
     ModelConst,
     ModelOnionCoef,
@@ -186,7 +187,67 @@ class TransformationModel(Model):
         names += self.slope.hyperparameter_names
         return list(set(names))
 
+    def copy_for(
+        self, y: Array, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> TransformationModel:
+        coef = self.coef.copy_for(sample_locs)
+        intercept = self.intercept.copy_for(sample_locs)
+        slope = self.slope.copy_for(sample_locs)
+
+        model = TransformationModel(
+            y=y, knots=self.knots, coef=coef, intercept=intercept, slope=slope
+        )
+
+        return model
+
+    def fit_loc_batched(
+        self,
+        model_validation: TransformationModel,
+        loc_batch_size: int | None = None,
+        optimizer: optax.GradientTransformation | None = None,
+        stopper: ptm.Stopper | None = None,
+    ) -> OptimResult:
+        if not self.graph:
+            self.build_graph()
+
+        locs = self.coef.latent_coef.sample_locs
+
+        model_batched = self.copy_for(
+            y=self.response.value[:, :loc_batch_size],
+            sample_locs=lsl.Var(locs.value[:loc_batch_size, ...], name=locs.name),
+        )
+        graph_batched = model_batched.build_graph()
+
+        model_validation_batched = model_validation.copy_for(
+            y=model_validation.response.value[:, :loc_batch_size],
+            sample_locs=lsl.Var(locs.value[:loc_batch_size, ...], name=locs.name),
+        )
+
+        graph_validation_batched = model_validation_batched.build_graph()
+
+        result = optim_loc_batched(
+            graph_batched,
+            params=self.param_names() + self.hyperparam_names(),
+            stopper=stopper,
+            optimizer=optimizer,
+            response=self.response,
+            locs=locs,
+            loc_batch_size=loc_batch_size,
+            model_validation=graph_validation_batched,
+        )
+
+        graph_batched.state = result.model_state
+        graph_batched.update()
+
+        self.coef.update_from(model_batched.coef)
+        self.intercept.update_from(model_batched.intercept)
+        self.slope.update_from(model_batched.slope)
+
+        return result
+
     def transformation_and_logdet(self, y: Array) -> tuple[Array, Array]:
+        if not self.graph:
+            self.build_graph()
         _, vars_ = self.graph.copy_nodes_and_vars()
         graph_copy = lsl.GraphBuilder().add(vars_[self.response.name]).build_model()
         graph_copy.vars[self.response_value.name].value = y

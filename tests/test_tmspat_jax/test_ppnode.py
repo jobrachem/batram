@@ -193,3 +193,58 @@ class TestOnionCoefPredictivePointProcessGP:
         assert amplitude in list(slope.kernel_params.values())
         assert length_scale in list(slope.kernel_params.values())
         assert jnp.all(slope.value > 0.0)
+
+    def test_copy_for(self):
+        amplitude = lsl.param(1.0)
+        length_scale = lsl.param(1.0)
+
+        locs = jrd.uniform(key, shape=(30, 2))
+
+        knots = OnionKnots(a=-3.0, b=3.0, nparam=10)
+
+        param = node.OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots=knots,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=amplitude,
+            length_scale=length_scale,
+        )
+
+        param.latent_coef.latent_var.value = jrd.uniform(
+            key, shape=param.latent_coef.latent_var.value.shape
+        )
+
+        param_new = param.copy_for(lsl.Var(locs))
+
+        assert jnp.allclose(param_new.value[:, :10], param.value)
+        assert param_new.value.shape == (knots.nparam + 7, locs.shape[0])
+
+        assert param_new.latent_coef.kernel_params["amplitude"] is not amplitude
+        assert param_new.latent_coef.kernel_params["length_scale"] is not length_scale
+
+
+class TestParamPredictivePointProcessGP:
+    def test_copy_for(self):
+        amplitude = lsl.param(1.0)
+        length_scale = lsl.param(1.0)
+
+        locs = jrd.uniform(key, shape=(30, 2))
+
+        param = node.ParamPredictivePointProcessGP(
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=amplitude,
+            length_scale=length_scale,
+        )
+
+        param.latent_var.value = jrd.uniform(key, shape=param.latent_var.value.shape)
+
+        param_new = param.copy_for(lsl.Var(locs))
+
+        assert jnp.allclose(param_new.value[:10], param.value)
+        assert param_new.value.shape == (locs.shape[0],)
+
+        assert param_new.kernel_params["amplitude"] is not amplitude
+        assert param_new.kernel_params["length_scale"] is not length_scale

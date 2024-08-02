@@ -8,6 +8,7 @@ Nodes for inducing points version.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import jax.numpy as jnp
@@ -58,6 +59,13 @@ class ModelConst(lsl.Var):
         self.parameter_names = []
         self.hyperparameter_names = []
 
+    def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
+        return ModelConst(self.value, name=self.name)
+
+    def update_from(self, param: ModelConst) -> ModelVar:
+        self.value = param.value
+        return self
+
 
 class ModelVar(TransformedVar):
     def __init__(
@@ -67,8 +75,21 @@ class ModelVar(TransformedVar):
         name: str = "",
     ) -> None:
         super().__init__(value=value, bijector=bijector, name=name)
+        self.bijector = bijector
         self.parameter_names = [find_param(self).name]
         self.hyperparameter_names = []
+
+    def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
+        return ModelVar(self.value, bijector=self.bijector, name=self.name)
+
+    def update_from(self, param: ModelVar) -> ModelVar:
+        if self.strong:
+            self.value = param.value
+            return self
+
+        if self.transformed:
+            self.transformed.value = param.transformed.value
+            return self.update()
 
 
 class ParamPredictivePointProcessGP(lsl.Var):
@@ -99,7 +120,7 @@ class ParamPredictivePointProcessGP(lsl.Var):
 
         n_inducing_locs = kernel_uu.value.shape[0]
 
-        latent_var = lsl.param(
+        self.latent_var = lsl.param(
             jnp.zeros((n_inducing_locs,)),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"{name}_latent",
@@ -116,19 +137,57 @@ class ParamPredictivePointProcessGP(lsl.Var):
             return bijector.forward(Kdu @ Li.T @ latent_var)
 
         super().__init__(
-            lsl.Calc(_compute_param, latent_var, kernel_uu, kernel_du),
+            lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du),
             name=name,
         )
 
+        self.bijector = bijector
         self.kernel_params = kernel_params
         self.kernel_cls = kernel_cls
         self.inducing_locs = inducing_locs
         self.sample_locs = sample_locs
         self.K = n_inducing_locs
-        self.parameter_names = [latent_var.name]
-        self.hyperparameter_names = [
-            find_param(param).name for param in kernel_params.values()
-        ]
+        self.parameter_names = [self.latent_var.name]
+
+    @property
+    def hyperparameter_names(self):
+        return [find_param(param).name for param in self.kernel_params.values()]
+
+    def copy_for(
+        self, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> ParamPredictivePointProcessGP:
+        kernel_params = {
+            name: copy.deepcopy(param) for name, param in self.kernel_params.items()
+        }
+
+        sample_locs = (
+            sample_locs if sample_locs is not None else copy.deepcopy(self.sample_locs)
+        )
+
+        var = ParamPredictivePointProcessGP(
+            inducing_locs=copy.deepcopy(self.inducing_locs),
+            sample_locs=sample_locs,
+            kernel_cls=self.kernel_cls,
+            bijector=self.bijector,
+            name=self.name,
+            **kernel_params,
+        )
+
+        var.latent_var.value = self.latent_var.value
+
+        return var
+
+    def update_from(
+        self, param: ParamPredictivePointProcessGP
+    ) -> ParamPredictivePointProcessGP:
+        for name, kernel_param in param.kernel_params.items():
+            self.kernel_params[name].value = kernel_param.value
+            self.kernel_params[name].update()
+
+        self.latent_var.value = param.latent_var.value
+        self.update()
+
+        return self
 
 
 def brownian_motion_mat(nrows: int, ncols: int):
@@ -230,9 +289,10 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
         self.K = n_inducing_locs
 
         self.parameter_names = [latent_var.name]
-        self.hyperparameter_names = [
-            find_param(param).name for param in kernel_params.values()
-        ]
+
+    @property
+    def hyperparameter_names(self):
+        return [find_param(param).name for param in self.kernel_params.values()]
 
 
 class OnionCoefPredictivePointProcessGP(lsl.Var):
@@ -247,9 +307,13 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
             name=name,
         )
 
+        self.coef_spec = coef_spec
         self.latent_coef = latent_coef
         self.parameter_names = latent_coef.parameter_names
-        self.hyperparameter_names = latent_coef.hyperparameter_names
+
+    @property
+    def hyperparameter_names(self):
+        return self.latent_coef.hyperparameter_names
 
     @classmethod
     def new_from_locs(
@@ -273,6 +337,50 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
         )
 
         return cls(coef_spec=coef_spec, latent_coef=latent_coef, name=name)
+
+    def copy_for(
+        self, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> OnionCoefPredictivePointProcessGP:
+        coef_spec = OnionCoef(self.coef_spec.knots)
+
+        kernel_params = {
+            name: copy.deepcopy(param)
+            for name, param in self.latent_coef.kernel_params.items()
+        }
+
+        sample_locs = (
+            sample_locs
+            if sample_locs is not None
+            else copy.deepcopy(self.latent_coef.sample_locs)
+        )
+
+        latent_coef = RandomWalkParamPredictivePointProcessGP(
+            inducing_locs=copy.deepcopy(self.latent_coef.inducing_locs),
+            sample_locs=sample_locs,
+            D=self.coef_spec.knots.nparam + 1,
+            kernel_cls=self.latent_coef.kernel_cls,
+            name=f"{self.name}_log_increments",
+            **kernel_params,
+        )
+
+        latent_coef.latent_var.value = self.latent_coef.latent_var.value
+
+        return OnionCoefPredictivePointProcessGP(
+            coef_spec=coef_spec, latent_coef=latent_coef, name=self.name
+        )
+
+    def update_from(
+        self, coef: OnionCoefPredictivePointProcessGP
+    ) -> OnionCoefPredictivePointProcessGP:
+        for name, kernel_param in coef.latent_coef.kernel_params.items():
+            self.latent_coef.kernel_params[name].value = kernel_param.value
+            self.latent_coef.kernel_params[name].update()
+
+        self.latent_coef.latent_var.value = coef.latent_coef.latent_var.value
+        self.latent_coef.update()
+        self.update()
+
+        return self
 
     def spawn_intercept(
         self, name: str = "intercept", **kernel_params

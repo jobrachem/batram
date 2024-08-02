@@ -475,7 +475,7 @@ def optim_flat(
 
         if save_position_history:
             pos_hist = val["history"]["position"]
-            val["history"]["position"] = jax.tree_map(
+            val["history"]["position"] = jax.tree.map(
                 lambda d, pos: d.at[val["while_i"]].set(pos), pos_hist, val["position"]
             )
 
@@ -489,6 +489,269 @@ def optim_flat(
     val = jax.lax.while_loop(
         cond_fun=lambda val: stopper.continue_(
             jnp.clip(val["while_i"] - 1, a_min=0), val["history"]["loss_validation"]
+        ),
+        body_fun=body_fun,
+        init_val=init_val,
+    )
+
+    max_iter = val["while_i"] - 1
+
+    # ---------------------------------------------------------------------------------
+    # Set final position and model state
+    stopper.patience = user_patience
+    ibest = stopper.which_best_in_recent_history(
+        i=max_iter, loss_history=val["history"]["loss_validation"]
+    )
+
+    if restore_best_position:
+        final_position: Position = {
+            name: pos[ibest] for name, pos in val["history"]["position"].items()
+        }  # type: ignore
+    else:
+        final_position = val["position"]
+
+    final_state = interface_train.update_state(final_position, model_train.state)
+
+    # ---------------------------------------------------------------------------------
+    # Set unused values in history to nan
+
+    val["history"]["loss_train"] = (
+        val["history"]["loss_train"].at[max_iter:].set(jnp.nan)
+    )
+    val["history"]["loss_validation"] = (
+        val["history"]["loss_validation"].at[max_iter:].set(jnp.nan)
+    )
+    if save_position_history:
+        for name, value in val["history"]["position"].items():
+            val["history"]["position"][name] = value.at[max_iter:, ...].set(jnp.nan)
+
+    # ---------------------------------------------------------------------------------
+    # Remove unused values in history, if applicable
+
+    if prune_history:
+        val["history"]["loss_train"] = val["history"]["loss_train"][:max_iter]
+        val["history"]["loss_validation"] = val["history"]["loss_validation"][:max_iter]
+        if save_position_history:
+            for name, value in val["history"]["position"].items():
+                val["history"]["position"][name] = value[:max_iter, ...]
+
+    # ---------------------------------------------------------------------------------
+    # Initialize results object and return
+
+    result = OptimResult(
+        model_state=final_state,
+        position=final_position,
+        iteration=max_iter,
+        iteration_best=ibest,
+        history=val["history"],
+        max_iter=stopper.max_iter,
+        n_train=n_train,
+        n_validation=n_validation,
+    )
+
+    return result
+
+
+def optim_loc_batched(
+    model_train: Model,
+    response: Var,
+    locs: Var,
+    params: Sequence[str],
+    optimizer: optax.GradientTransformation | None = None,
+    stopper: Stopper | None = None,
+    loc_batch_size: int | None = None,
+    batch_seed: int | None = None,
+    save_position_history: bool = True,
+    model_validation: Model | None = None,
+    restore_best_position: bool = True,
+    prune_history: bool = True,
+    n_train: int | None = None,
+    n_validation: int | None = None,
+) -> OptimResult:
+    # ---------------------------------------------------------------------------------
+    # Validation input
+    if restore_best_position:
+        assert (
+            save_position_history
+        ), "Cannot restore best position if history is not saved."
+
+    # ---------------------------------------------------------------------------------
+    # Pre-process inputs
+
+    batch_seed = (
+        batch_seed if batch_seed is not None else np.random.randint(low=1, high=1000)
+    )
+
+    if stopper is None:
+        stopper = Stopper(max_iter=100, patience=10)
+
+    user_patience = stopper.patience
+    if model_validation is None:
+        model_validation = model_train
+        stopper.patience = stopper.max_iter
+
+    if optimizer is None:
+        optimizer = optax.adam(learning_rate=1e-2)
+
+    nloc = locs.value[0]
+
+    batch_size = loc_batch_size if loc_batch_size is not None else nloc
+
+    interface_train = LieselInterface(model_train)
+    position = interface_train.extract_position(params, model_train.state)
+    interface_train._model.auto_update = False
+
+    interface_validation = LieselInterface(model_validation)
+    interface_validation._model.auto_update = False
+
+    # ---------------------------------------------------------------------------------
+    # Validate model log prob decomposition
+    _validate_log_prob_decomposition(
+        interface_train, position=position, state=model_train.state
+    )
+    _validate_log_prob_decomposition(
+        interface_validation, position=position, state=model_validation.state
+    )
+
+    # ---------------------------------------------------------------------------------
+    # Define loss function(s)
+
+    n_train = model_train.vars["response"].value.shape[0]
+    n_validation = model_validation.vars["response"].value.shape[0]
+
+    likelihood_scalar_validation = n_train / n_validation
+
+    def _batched_neg_log_prob(position: Position, batch_indices: Array | None = None):
+        if batch_indices is not None:
+            batched_response = {response.name: response.value[:, batch_indices]}
+            batched_location = {locs.name: locs.value[batch_indices, ...]}
+            position = position | batched_response | batched_location  # type: ignore
+
+        updated_state = interface_train.update_state(position, model_train.state)
+        log_lik = updated_state["_model_log_lik"].value
+        log_prior = updated_state["_model_log_prior"].value
+        log_prob = log_lik + log_prior
+        return -log_prob
+
+    def _neg_log_prob_train(position: Position):
+        updated_state = interface_validation.update_state(position, model_train.state)
+        return -updated_state["_model_log_prob"].value
+
+    def _neg_log_prob_validation(position: Position):
+        updated_state = interface_validation.update_state(
+            position, model_validation.state
+        )
+        log_lik = likelihood_scalar_validation * updated_state["_model_log_lik"].value
+        log_prior = updated_state["_model_log_prior"].value
+        log_prob = log_lik + log_prior
+        return -log_prob
+
+    neg_log_prob_grad = jax.grad(_batched_neg_log_prob, argnums=0)
+
+    # ---------------------------------------------------------------------------------
+    # Initialize history
+
+    history: dict[str, Any] = dict()
+    history["loss_train"] = jnp.zeros(shape=stopper.max_iter)
+    history["loss_validation"] = jnp.zeros(shape=stopper.max_iter)
+
+    if save_position_history:
+        history["position"] = {
+            name: jnp.zeros((stopper.max_iter,) + jnp.shape(value))
+            for name, value in position.items()
+        }
+    else:
+        history["position"] = None
+
+    loss_train_start = _neg_log_prob_train(position=position)
+    loss_validation_start = _neg_log_prob_validation(position=position)
+    history["loss_train"] = history["loss_train"].at[0].set(loss_train_start)
+    history["loss_validation"] = (
+        history["loss_validation"].at[0].set(loss_validation_start)
+    )
+
+    # ---------------------------------------------------------------------------------
+    # Initialize while loop carry dictionary
+
+    init_val: dict[str, Any] = dict()
+    init_val["while_i"] = 0
+    init_val["history"] = history
+    init_val["position"] = position
+    init_val["opt_state"] = optimizer.init(position)
+    init_val["key"] = jax.random.PRNGKey(batch_seed)
+
+    # ---------------------------------------------------------------------------------
+    # Define while loop body
+    progress_bar = tqdm(
+        total=stopper.max_iter - 1,
+        desc=(
+            f"Training loss: {loss_train_start:.3f}, Validation loss:"
+            f" {loss_validation_start:.3f}"
+        ),
+        position=0,
+        leave=True,
+    )
+
+    def tqdm_callback(val):
+        i = val["while_i"] - 1
+        loss_train = val["history"]["loss_train"][i]
+        loss_validation = val["history"]["loss_validation"][i]
+        desc = (
+            f"Training loss: {loss_train:.3f}, Validation loss: {loss_validation:.3f}"
+        )
+        progress_bar.update(1)
+        progress_bar.set_description(desc)
+
+    def body_fun(val: dict):
+        _, subkey = jax.random.split(val["key"])
+        batches = _generate_batch_indices(key=subkey, n=n_train, batch_size=batch_size)
+
+        # -----------------------------------------------------------------------------
+        # Loop over batches
+
+        def _fori_body(i, val):
+            batch = batches[i]
+            pos = val["position"]
+            grad = neg_log_prob_grad(pos, batch_indices=batch)
+            updates, opt_state = optimizer.update(grad, val["opt_state"], params=pos)
+            val["position"] = optax.apply_updates(pos, updates)
+            val["opt_state"] = opt_state
+
+            return val
+
+        val = jax.lax.fori_loop(
+            body_fun=_fori_body, init_val=val, lower=0, upper=len(batches)
+        )
+
+        # -----------------------------------------------------------------------------
+        # Save values and increase counter
+
+        loss_train = _neg_log_prob_train(val["position"])
+        val["history"]["loss_train"] = (
+            val["history"]["loss_train"].at[val["while_i"]].set(loss_train)
+        )
+
+        loss_validation = _neg_log_prob_validation(val["position"])
+        val["history"]["loss_validation"] = (
+            val["history"]["loss_validation"].at[val["while_i"]].set(loss_validation)
+        )
+
+        if save_position_history:
+            pos_hist = val["history"]["position"]
+            val["history"]["position"] = jax.tree.map(
+                lambda d, pos: d.at[val["while_i"]].set(pos), pos_hist, val["position"]
+            )
+
+        jax.debug.callback(tqdm_callback, val)
+        val["while_i"] += 1
+        return val
+
+    # ---------------------------------------------------------------------------------
+    # Run while loop
+
+    val = jax.lax.while_loop(
+        cond_fun=lambda val: stopper.continue_(
+            jnp.clip(val["while_i"] - 1, min=0), val["history"]["loss_validation"]
         ),
         body_fun=body_fun,
         init_val=init_val,

@@ -245,6 +245,69 @@ class TestTransformationModel:
 
         assert model.param_names()[0] == coef.parameter_names[0]
 
+    def test_copy_for(self) -> None:
+        y = jrd.normal(key, shape=(20, 50))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0),
+            length_scale=lsl.param(1.0),
+        )
+
+        coef.latent_coef.latent_var.value = jrd.normal(
+            key, shape=coef.latent_coef.latent_var.value.shape
+        )
+
+        model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
+        z, logdet = model.transformation_and_logdet(y[:, :10])
+
+        model_new = model.copy_for(y, sample_locs=lsl.Var(locs))
+        z_new, logdet_new = model_new.transformation_and_logdet(y)
+
+        assert not jnp.allclose(z, y[:, :10], atol=1e-3)
+
+        assert jnp.allclose(model.coef.value, model_new.coef.value[:, :10])
+
+        assert jnp.allclose(z, z_new[:, :10])
+        assert jnp.allclose(logdet, logdet_new[:, :10])
+
+        assert z_new.shape == y.shape
+        assert logdet_new.shape == y.shape
+
+    def test_fit_batched(self) -> None:
+        y = jrd.normal(key, shape=(90, 100))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:10, :], name="inducing_locs"),
+            sample_locs=lsl.Var(locs, name="locs"),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="amplitude"),
+            length_scale=lsl.param(1.0, name="length_scale"),
+            name="coef",
+        )
+
+        model = TransformationModel(y[:-10, :], knots=knots.knots, coef=coef)
+        model_validation = model.copy_for(y[-10:, :])
+
+        with jax.disable_jit(disable=False):
+            result = model.fit_loc_batched(
+                model_validation=model_validation, loc_batch_size=10
+            )
+
+        model.build_graph()
+        model_validation.build_graph()
+        model.fit(model.graph, model_validation.graph)
+
+        assert True
+
 
 class TestChainedModel:
     @pytest.mark.parametrize(
