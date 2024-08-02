@@ -36,7 +36,7 @@ class TestKernel:
         amplitude = lsl.param(1.0)
         length_scale = lsl.param(1.0)
 
-        locs = jrd.uniform(key, shape=(10, 2))
+        locs = lsl.Var(jrd.uniform(key, shape=(10, 2)))
 
         kernel = node.Kernel(
             locs,
@@ -48,7 +48,7 @@ class TestKernel:
 
         assert kernel.value.shape == (10, 10)
 
-        dist = matrix_of_distances(locs, locs)
+        dist = matrix_of_distances(locs.value, locs.value)
         cov = exponentiated_quadratic_kernel(
             dist, amplitude=amplitude.value, length_scale=length_scale.value
         )
@@ -59,19 +59,19 @@ class TestKernel:
         amplitude = lsl.param(1.0)
         length_scale = lsl.param(1.0)
 
-        locs = jrd.uniform(key, shape=(10, 3))
+        locs = lsl.Var(jrd.uniform(key, shape=(10, 3)))
 
         kernel = node.Kernel(
             locs,
             locs,
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,
         )
 
         assert kernel.value.shape == (10, 10)
 
-        dist = matrix_of_distances(locs, locs)
+        dist = matrix_of_distances(locs.value, locs.value)
         cov = exponentiated_quadratic_kernel(
             dist, amplitude=amplitude.value, length_scale=length_scale.value
         )
@@ -82,22 +82,24 @@ class TestKernel:
         amplitude = lsl.param(1.0)
         length_scale = lsl.param(1.0)
 
-        locs = jrd.uniform(key, shape=(10, 2))
+        locs = lsl.Var(jrd.uniform(key, shape=(10, 2)))
 
         kernel = node.Kernel(
             locs,
             locs,
-            kernel_class=tfk.ExponentiatedQuadratic,
+            kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,
         )
 
         assert kernel.value.shape == (10, 10)
 
+        locs_subset = lsl.Var(locs.value[:5, :])
+
         kernel2 = node.Kernel(
             locs,
-            locs[:5, :],
-            kernel_class=tfk.ExponentiatedQuadratic,
+            locs_subset,
+            kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,
         )
@@ -113,9 +115,9 @@ class TestRandomWalkParamPredictivePointGP:
         locs = jrd.uniform(key, shape=(30, 2))
 
         param = node.RandomWalkParamPredictivePointProcessGP(
-            locs=locs,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             D=10,
-            K=5,
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,
@@ -137,8 +139,8 @@ class TestOnionCoefPredictivePointProcessGP:
 
         param = node.OnionCoefPredictivePointProcessGP.new_from_locs(
             knots=knots,
-            locs=locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,
@@ -157,8 +159,8 @@ class TestOnionCoefPredictivePointProcessGP:
 
         param = node.OnionCoefPredictivePointProcessGP.new_from_locs(
             knots=knots,
-            locs=locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,
@@ -179,8 +181,8 @@ class TestOnionCoefPredictivePointProcessGP:
 
         param = node.OnionCoefPredictivePointProcessGP.new_from_locs(
             knots=knots,
-            locs=locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=amplitude,
             length_scale=length_scale,

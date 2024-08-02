@@ -24,8 +24,8 @@ Array = Any
 class Kernel(lsl.Var):
     def __init__(
         self,
-        x1: Array,
-        x2: Array,
+        x1: lsl.Var | lsl.Node,
+        x2: lsl.Var | lsl.Node,
         kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         name: str = "",
         **kwargs,
@@ -35,14 +35,14 @@ class Kernel(lsl.Var):
 
         self.kernel_cls = kernel_cls
 
-        def _evaluate_kernel(**kwargs):
+        def _evaluate_kernel(x1, x2, **kwargs):
             return (
                 kernel_cls(**kwargs)
                 .apply(x1=x1[None, :], x2=x2[:, None])
                 .swapaxes(-1, -2)
             )
 
-        calc = lsl.Calc(_evaluate_kernel, **kwargs).update()
+        calc = lsl.Calc(_evaluate_kernel, x1, x2, **kwargs).update()
 
         super().__init__(calc, name=name)
         self.update()
@@ -74,46 +74,46 @@ class ModelVar(TransformedVar):
 class ParamPredictivePointProcessGP(lsl.Var):
     def __init__(
         self,
-        locs: Array,
-        K: int,
+        inducing_locs: lsl.Var | lsl.Node,
+        sample_locs: lsl.Var | lsl.Node,
         kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         bijector: tfb.Bijector = tfb.Identity(),
         name: str = "",
         **kernel_params: lsl.Var | TransformedVar,
     ) -> None:
         kernel_uu = Kernel(
-            x1=locs[:K, :],
-            x2=locs[:K, :],
+            x1=inducing_locs,
+            x2=inducing_locs,
             kernel_cls=kernel_cls,
             **kernel_params,
             name=f"{name}_kernel",
-        )
+        ).update()
 
         kernel_du = Kernel(
-            x1=locs[K:, :],
-            x2=locs[:K, :],
+            x1=sample_locs,
+            x2=inducing_locs,
             kernel_cls=kernel_cls,
             **kernel_params,
             name=f"{name}_kernel_latent_u",
-        )
+        ).update()
+
+        n_inducing_locs = kernel_uu.value.shape[0]
 
         latent_var = lsl.param(
-            jnp.zeros((K,)),
+            jnp.zeros((n_inducing_locs,)),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"{name}_latent",
         )
 
         # a small value added to the diagonal of Kuu for numerical stability
-        salt = jnp.diag(jnp.full(shape=(kernel_uu.value.shape[0],), fill_value=1e-6))
+        salt = jnp.diag(jnp.full(shape=(n_inducing_locs,), fill_value=1e-6))
 
         def _compute_param(latent_var, Kuu, Kdu):
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
             Li = jnp.linalg.inv(L)
 
-            u = L @ latent_var
-            alpha = Kdu @ Li.T @ latent_var
-            return bijector.forward(jnp.r_[u, alpha])
+            return bijector.forward(Kdu @ Li.T @ latent_var)
 
         super().__init__(
             lsl.Calc(_compute_param, latent_var, kernel_uu, kernel_du),
@@ -122,8 +122,9 @@ class ParamPredictivePointProcessGP(lsl.Var):
 
         self.kernel_params = kernel_params
         self.kernel_cls = kernel_cls
-        self.locs = locs
-        self.K = K
+        self.inducing_locs = inducing_locs
+        self.sample_locs = sample_locs
+        self.K = n_inducing_locs
         self.parameter_names = [latent_var.name]
         self.hyperparameter_names = [
             find_param(param).name for param in kernel_params.values()
@@ -158,24 +159,24 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
 
     def __init__(
         self,
-        locs: Array,
+        inducing_locs: Array,
+        sample_locs: Array,
         D: int,
-        K: int,
         kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         name: str = "",
         **kernel_params: lsl.Var | TransformedVar,
     ):
         kernel_uu = Kernel(
-            x1=locs[:K, :],
-            x2=locs[:K, :],
+            x1=inducing_locs,
+            x2=inducing_locs,
             kernel_cls=kernel_cls,
             **kernel_params,
             name=f"{name}_kernel",
         )
 
         kernel_du = Kernel(
-            x1=locs[K:, :],
-            x2=locs[:K, :],
+            x1=sample_locs,
+            x2=inducing_locs,
             kernel_cls=kernel_cls,
             **kernel_params,
             name=f"{name}_kernel_latent_u",
@@ -185,8 +186,11 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
 
         nrow_W = W.shape[0]
 
+        n_inducing_locs = kernel_uu.value.shape[0]
+        n_sample_locs = kernel_du.value.shape[0]
+
         latent_var = lsl.param(
-            jnp.zeros((K * (W.shape[1]),)),
+            jnp.zeros((n_inducing_locs * (W.shape[1]),)),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"{name}_latent",
         )
@@ -198,15 +202,11 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
             L = jnp.linalg.cholesky(Kuu)
             Li = jnp.linalg.inv(L)
 
-            Wkron = jnp.kron(W, L)
-            u = Wkron @ latent_var
-            u_mat = jnp.reshape(u, (nrow_W, K))
-
             Kdu_uui = jnp.kron(W, (Kdu @ Li.T))
             delta_long = Kdu_uui @ latent_var
-            delta_mat = jnp.reshape(delta_long, (nrow_W, locs.shape[0] - K))
+            delta_mat = jnp.reshape(delta_long, (nrow_W, n_sample_locs))
 
-            return jnp.concatenate([u_mat, delta_mat], axis=1)
+            return delta_mat
 
         super().__init__(
             lsl.Calc(
@@ -225,8 +225,9 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
         self.W = W
         self.kernel_params = kernel_params
         self.kernel_cls = kernel_cls
-        self.locs = locs
-        self.K = K
+        self.inducing_locs = inducing_locs
+        self.sample_locs = sample_locs
+        self.K = n_inducing_locs
 
         self.parameter_names = [latent_var.name]
         self.hyperparameter_names = [
@@ -254,8 +255,8 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
     def new_from_locs(
         cls,
         knots: OnionKnots,
-        locs: Array,
-        K: int,
+        inducing_locs: lsl.Var | lsl.Node,
+        sample_locs: lsl.Var | lsl.Node,
         kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         name: str = "",
         **kernel_params: lsl.Var | TransformedVar,
@@ -263,9 +264,9 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
         coef_spec = OnionCoef(knots)
 
         latent_coef = RandomWalkParamPredictivePointProcessGP(
-            locs=locs,
+            inducing_locs=inducing_locs,
+            sample_locs=sample_locs,
             D=knots.nparam + 1,
-            K=K,
             kernel_cls=kernel_cls,
             name=f"{name}_log_increments",
             **kernel_params,
@@ -280,8 +281,8 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
             kernel_params = self.latent_coef.kernel_params
 
         intercept = ParamPredictivePointProcessGP(
-            locs=self.latent_coef.locs,
-            K=self.latent_coef.K,
+            inducing_locs=self.latent_coef.inducing_locs,
+            sample_locs=self.latent_coef.sample_locs,
             kernel_cls=self.latent_coef.kernel_cls,
             name=name,
             **kernel_params,
@@ -299,8 +300,8 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
             kernel_params = self.latent_coef.kernel_params
 
         slope = ParamPredictivePointProcessGP(
-            locs=self.latent_coef.locs,
-            K=self.latent_coef.K,
+            inducing_locs=self.latent_coef.inducing_locs,
+            sample_locs=self.latent_coef.sample_locs,
             kernel_cls=self.latent_coef.kernel_cls,
             name=name,
             bijector=bijector,
