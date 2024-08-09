@@ -714,7 +714,7 @@ class SimpleTM(torch.nn.Module):
 
         return x_new
 
-    def sample_from_z(self, z, seed: int | None = None):
+    def sample_from_z(self, z, seed: int | None = None, fixed=torch.tensor([]), last_ind: int | None = None):
         """
         I'm not sure where this should exactly be implemented.
 
@@ -723,6 +723,12 @@ class SimpleTM(torch.nn.Module):
 
         In any case, this class should expose an interface.
         """
+        if last_ind is not None and last_ind < fixed.size(-1):
+            raise ValueError("last_ind must be larger than conditioned field 'fixed'.")
+        
+        if not len(fixed.size()) == 1:
+            raise ValueError("'fixed' must be a 1d tensor.")
+
 
         if seed is not None:
             torch.manual_seed(seed)
@@ -746,11 +752,15 @@ class SimpleTM(torch.nn.Module):
         beta_post = tmp_res.beta_post
         alpha_post = tmp_res.alpha_post
         n, N = data.shape
+        if last_ind is None:
+            last_ind = N
+
         m = NN.shape[1]
         # loop over variables/locations
         x_new = torch.empty((num_samples, N))
+        x_new[:,:fixed.shape[0]] = fixed
 
-        for i in range(N):
+        for i in range(fixed.size(0), last_ind):
             # predictive distribution for current sample
             if i == 0:
                 cStar = torch.zeros((num_samples, n))
@@ -785,10 +795,18 @@ class SimpleTM(torch.nn.Module):
     def inverse_map(
         self,
         z,
+        fixed=torch.tensor([]), 
+        last_ind: int | None = None
     ):
         """
         Code mostly copy-and-pasted from cond_samp.
         """
+
+        if last_ind is not None and last_ind < fixed.size(-1):
+            raise ValueError("last_ind must be larger than conditioned field 'fixed'.")
+        
+        if not len(fixed.size()) == 1:
+            raise ValueError("'fixed' must be a 1d tensor.")
 
         num_samples = z.shape[0] if len(z.shape) > 1 else 1
 
@@ -811,8 +829,14 @@ class SimpleTM(torch.nn.Module):
         n, N = data.shape
         m = NN.shape[1]
         # loop over variables/locations
+
+        if last_ind is None:
+            last_ind = N
+        
         x_new = torch.empty((num_samples, N))
-        for i in range(N):
+        x_new[:,:fixed.shape[0]] = fixed
+
+        for i in range(fixed.size(0), last_ind):
             # predictive distribution for current sample
             if i == 0:
                 cStar = torch.zeros((num_samples, n))

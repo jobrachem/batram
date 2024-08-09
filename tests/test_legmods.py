@@ -143,6 +143,17 @@ def test_inverse_map(simple_data: Data) -> None:
         assert score == pytest.approx(score_z, abs=1e-3)
 
 
+def test_sample_from_z_with_fixed(simple_data: Data) -> None:
+    tm = SimpleTM(simple_data)
+    x_fix = simple_data.response[0, :10]
+    z = torch.tensor(np.random.normal(size=simple_data.response.shape))
+
+    with torch.no_grad():
+        y = tm.sample_from_z(z, fixed=x_fix)
+    
+    assert torch.allclose(y[0,:x_fix.shape[0]], x_fix)
+
+
 def test_legmods_nugget_mean(simple_data: Data) -> None:
     augdata = AugmentData()(simple_data)
     theta_init = torch.tensor(
