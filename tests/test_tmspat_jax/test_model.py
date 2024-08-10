@@ -217,8 +217,24 @@ class TestTransformationModel:
         )
 
         model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
-        with jax.disable_jit(disable=False):
-            model.transformation_inverse(y, locs=locs)
+        ynew = model.transformation_inverse(y, locs=locs)
+        assert jnp.allclose(ynew, y, atol=1e-5)
+
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0),
+            length_scale=lsl.param(1.0),
+        )
+        shape = coef.latent_coef.latent_var.value.shape
+        coef.latent_coef.latent_var.value = jrd.normal(key, shape)
+
+        model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
+        z, _ = model.transformation_and_logdet(y, locs)
+        ynew = model.transformation_inverse(z, locs=locs)
+        assert jnp.allclose(ynew, y, atol=1e-5)
 
     def test_copy_for(self) -> None:
         y = jrd.normal(key, shape=(20, 50))
