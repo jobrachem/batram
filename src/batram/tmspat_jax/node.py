@@ -221,8 +221,8 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
 
     def __init__(
         self,
-        inducing_locs: Array,
-        sample_locs: Array,
+        inducing_locs: lsl.Var | lsl.Node,
+        sample_locs: lsl.Var | lsl.Node,
         D: int,
         kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         name: str = "",

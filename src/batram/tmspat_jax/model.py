@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
 import optax
 import tensorflow_probability.substrates.jax.distributions as tfd
 from liesel.goose.optim import OptimResult, optim_flat
+from liesel_ptm.dist import TransformationDist
 from liesel_ptm.nodes import TransformationDistLogDeriv
 from liesel_ptm.ptm_ls import NormalizationFn
 
@@ -208,22 +210,24 @@ class TransformationModel(Model):
 
     def fit_loc_batched(
         self,
+        y: Array,
+        locs: Array,
         model_validation: TransformationModel,
         loc_batch_size: int | None = None,
         optimizer: optax.GradientTransformation | None = None,
         stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
-        locs = self.coef.latent_coef.sample_locs
+        locs_name = self.coef.latent_coef.sample_locs.name
 
         model_batched = self.copy_for(
             y=self.response.value[:, :loc_batch_size],
-            sample_locs=lsl.Var(locs.value[:loc_batch_size, ...], name=locs.name),
+            sample_locs=lsl.Var(locs[:loc_batch_size, ...], name=locs_name),
         )
         graph_batched = model_batched.graph
 
         model_validation_batched = model_validation.copy_for(
             y=model_validation.response.value[:, :loc_batch_size],
-            sample_locs=lsl.Var(locs.value[:loc_batch_size, ...], name=locs.name),
+            sample_locs=lsl.Var(locs[:loc_batch_size, ...], name=locs_name),
         )
 
         graph_validation_batched = model_validation_batched.graph
@@ -233,8 +237,8 @@ class TransformationModel(Model):
             params=self.param_names() + self.hyperparam_names(),
             stopper=stopper,
             optimizer=optimizer,
-            response=self.response,
-            locs=locs,
+            response=lsl.Var(y, name="response"),
+            locs=lsl.Var(locs, name=locs_name),
             loc_batch_size=loc_batch_size,
             model_validation=graph_validation_batched,
         )
@@ -248,28 +252,145 @@ class TransformationModel(Model):
 
         return result
 
-    def transformation_and_logdet(self, y: Array) -> tuple[Array, Array]:
-        _, vars_ = self.graph.copy_nodes_and_vars()
-        graph_copy = lsl.GraphBuilder().add(vars_[self.response.name]).build_model()
-        graph_copy.vars[self.response_value.name].value = y
-        graph_copy.update()
-        z = graph_copy.vars[self.transformation.name].value
-        logdet = jnp.log(graph_copy.vars[self.transformation_deriv.name].value)
-        return z, logdet
+    def transformation_and_logdet(
+        self, y: Array, locs: Array | None = None
+    ) -> tuple[Array, Array]:
+        if locs is None:
+            locs = self.coef.latent_coef.sample_locs.value
 
-    def transformation_inverse(self, z: Array) -> Array:
-        hfn = NormalizationFn(
-            knots=self.knots,
-            order=3,
-            transition_width=self._extrap_transition_width,
+        n_loc = locs.shape[0]
+        if n_loc != y.shape[1]:
+            raise ValueError(
+                f"Number of available locations ({n_loc}) != Number of locations in y"
+                f" ({y.shape[1]})"
+            )
+
+        n_loc_model = self.response.value.shape[1]
+
+        def _generate_batch_indices(n: int, batch_size: int) -> Array:
+            n_full_batches = n // batch_size
+            indices = jnp.arange(n)
+            indices_subset = indices[0 : n_full_batches * batch_size]
+            list_of_batch_indices = jnp.array_split(indices_subset, n_full_batches)
+            return jnp.asarray(list_of_batch_indices)
+
+        batch_indices = _generate_batch_indices(n_loc, batch_size=n_loc_model)
+        last_batch_indices = jnp.arange(batch_indices[-1, -1] + 1, y.shape[1])
+
+        _, _vars = self.graph.copy_nodes_and_vars()
+        graph = lsl.GraphBuilder().add(_vars["response"]).build_model()
+        response_value = graph.vars[self.response_value.name]
+        coef = graph.vars[self.coef.name]
+        transformation = graph.vars[self.transformation.name]
+        transformation_deriv = graph.vars[self.transformation_deriv.name]
+
+        def one_batch(y, locs):
+            response_value.value = y
+            coef.latent_coef.sample_locs.value = locs
+            graph.update()
+            z = transformation.value
+            logdet = jnp.log(transformation_deriv.value)
+            return z, logdet
+
+        z = jnp.empty_like(y)
+        z_logdet = jnp.empty_like(y)
+        init_val = (y, locs, batch_indices, z, z_logdet)
+
+        def body_fun(i, val):
+            y, locs, batch_indices, z, z_logdet = val
+
+            idx = batch_indices[i]
+
+            z_i, z_logdet_i = one_batch(y[:, idx], locs[idx, ...])
+            z = z.at[:, batch_indices[i]].set(z_i)
+            z_logdet = z_logdet.at[:, batch_indices[i]].set(z_logdet_i)
+
+            return (y, locs, batch_indices, z, z_logdet)
+
+        _, _, _, z, z_logdet = jax.lax.fori_loop(
+            lower=0, upper=batch_indices.shape[0], body_fun=body_fun, init_val=init_val
         )
 
-        y = hfn.inverse_newton(
-            z=z.T,
-            coef=self.coef.update().value.T,
-            norm_mean=jnp.zeros(1),
-            norm_sd=jnp.ones(1),
-        ).T
+        y_last_batch = y[:, last_batch_indices]
+        locs_last_batch = locs[last_batch_indices, ...]
+        model_last_batch = self.copy_for(
+            y=y_last_batch, sample_locs=lsl.Var(locs_last_batch, name="locs")
+        )
+        z_i = model_last_batch.transformation.value
+        z_logdet_i = jnp.log(model_last_batch.transformation_deriv.value)
+
+        z = z.at[:, last_batch_indices].set(z_i)
+        z_logdet = z_logdet.at[:, last_batch_indices].set(z_logdet_i)
+
+        return z, z_logdet
+
+    def transformation_inverse(self, z: Array, locs: Array | None = None) -> Array:
+        """
+        Warning: Does not take intercept or slope into account!
+        """
+        if locs is None:
+            locs = self.coef.latent_coef.sample_locs.value
+
+        n_loc = locs.shape[0]
+        if n_loc != z.shape[1]:
+            raise ValueError(
+                f"Number of available locations ({n_loc}) != Number of locations in z"
+                f" ({z.shape[1]})"
+            )
+
+        n_loc_model = self.response.value.shape[1]
+
+        def _generate_batch_indices(n: int, batch_size: int) -> Array:
+            n_full_batches = n // batch_size
+            indices = jnp.arange(n)
+            indices_subset = indices[0 : n_full_batches * batch_size]
+            list_of_batch_indices = jnp.array_split(indices_subset, n_full_batches)
+            return jnp.asarray(list_of_batch_indices)
+
+        batch_indices = _generate_batch_indices(n_loc, batch_size=n_loc_model)
+        last_batch_indices = jnp.arange(batch_indices[-1, -1] + 1, z.shape[1])
+
+        _, _vars = self.graph.copy_nodes_and_vars()
+        graph = lsl.GraphBuilder().add(_vars["response"]).build_model()
+        coef = graph.vars[self.coef.name]
+
+        def one_batch(z, locs):
+            coef.latent_coef.sample_locs.value = locs
+
+            dist = TransformationDist(
+                knots=self.knots,
+                coef=coef.update().value.T,
+            )
+
+            y = dist.inverse_transformation(z)
+
+            return y
+
+        y = jnp.empty_like(z)
+        init_val = (z, locs, batch_indices, y)
+
+        def body_fun(i, val):
+            z, locs, batch_indices, y = val
+            idx = batch_indices[i]
+            y_i = one_batch(z[:, idx], locs[idx, ...])
+            y = y.at[:, batch_indices[i]].set(y_i)
+            return (z, locs, batch_indices, y)
+
+        _, _, _, y = jax.lax.fori_loop(
+            lower=0, upper=batch_indices.shape[0], body_fun=body_fun, init_val=init_val
+        )
+
+        z_last_batch = z[:, last_batch_indices]
+        locs_last_batch = locs[last_batch_indices, ...]
+        model_last_batch = self.copy_for(
+            y=z_last_batch, sample_locs=lsl.Var(locs_last_batch, name="locs")
+        )
+        dist = TransformationDist(
+            knots=self.knots,
+            coef=model_last_batch.coef.update().value.T,
+        )
+        y_i = dist.inverse_transformation(z_last_batch)
+        y = y.at[:, last_batch_indices].set(y_i)
 
         return y
 

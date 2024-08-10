@@ -185,6 +185,41 @@ class TestTransformationModel:
 
         assert model.param_names()[0] == coef.parameter_names[0]
 
+    def test_transformation(self):
+        y = jrd.normal(key, shape=(20, 52))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0),
+            length_scale=lsl.param(1.0),
+        )
+
+        model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
+        model.transformation_and_logdet(y, locs=locs)
+
+    def test_transformation_inverse(self):
+        y = jrd.normal(key, shape=(20, 52))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0),
+            length_scale=lsl.param(1.0),
+        )
+
+        model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
+        with jax.disable_jit(disable=False):
+            model.transformation_inverse(y, locs=locs)
+
     def test_copy_for(self) -> None:
         y = jrd.normal(key, shape=(20, 50))
         locs = jrd.uniform(key, shape=(y.shape[1], 2))
@@ -204,9 +239,9 @@ class TestTransformationModel:
         )
 
         model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
-        z, logdet = model.transformation_and_logdet(y[:, :10])
-
         model_new = model.copy_for(y, sample_locs=lsl.Var(locs))
+
+        z, logdet = model.transformation_and_logdet(y[:, :10])
         z_new, logdet_new = model_new.transformation_and_logdet(y)
 
         assert not jnp.allclose(z, y[:, :10], atol=1e-3)
@@ -238,7 +273,9 @@ class TestTransformationModel:
         model_validation = model.copy_for(y[-10:, :])
 
         with jax.disable_jit(disable=False):
-            model.fit_loc_batched(model_validation=model_validation, loc_batch_size=10)
+            model.fit_loc_batched(
+                y=y, locs=locs, model_validation=model_validation, loc_batch_size=10
+            )
 
         assert True
 
