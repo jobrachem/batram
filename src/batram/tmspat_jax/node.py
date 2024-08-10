@@ -1,15 +1,23 @@
+"""
+Nodes for inducing points version.
+
+- Alpha parameter: Intercept with its own hyperparameters
+- Alpha parameter: Has prior mean, is estimated
+- Slope has prior mean, is estimated
+"""
+
 from __future__ import annotations
 
-from functools import partial
+import copy
 from typing import Any
 
-import jax
 import jax.numpy as jnp
 import liesel.model as lsl
-import liesel_ptm as ptm
+import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
-from liesel.goose.types import ModelState
+from liesel_ptm.bsplines import OnionCoef, OnionKnots
+from liesel_ptm.nodes import OnionCoefParam, TransformedVar, find_param
 
 Array = Any
 
@@ -17,55 +25,172 @@ Array = Any
 class Kernel(lsl.Var):
     def __init__(
         self,
-        x: Array,
-        kernel_class: type[tfk.AutoCompositeTensorPsdKernel],
+        x1: lsl.Var | lsl.Node,
+        x2: lsl.Var | lsl.Node,
+        kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         name: str = "",
         **kwargs,
     ) -> None:
-        if not jnp.ndim(x) == 2:
-            raise ValueError("x must be a 2d array.")
+        self.x1 = x1
+        self.x2 = x2
 
-        self.x = x
-        self.kernel_class = kernel_class
+        self.kernel_cls = kernel_cls
 
-        def _evaluate_kernel(**kwargs):
-            return kernel_class(**kwargs).apply(x1=x[None, :], x2=x[:, None])
+        def _evaluate_kernel(x1, x2, **kwargs):
+            return (
+                kernel_cls(**kwargs)
+                .apply(x1=x1[None, :], x2=x2[:, None])
+                .swapaxes(-1, -2)
+            )
 
-        calc = lsl.Calc(_evaluate_kernel, **kwargs)
+        calc = lsl.Calc(_evaluate_kernel, x1, x2, **kwargs).update()
 
         super().__init__(calc, name=name)
+        self.update()
 
 
-class MultioutputKernelIMC(lsl.Var):
+class ModelConst(lsl.Var):
     def __init__(
         self,
-        x: Array,
-        W: Array,
-        kernel_class: type[tfk.AutoCompositeTensorPsdKernel],
+        value: Any,
         name: str = "",
-        **kwargs,
     ) -> None:
-        if not jnp.ndim(x) == 2:
-            raise ValueError("x must be a 2d array.")
+        super().__init__(value=value, name=name)
+        self.parameter_names: list[str] = []
+        self.hyperparameter_names: list[str] = []
 
-        self.x = x
-        self.kernel_class = kernel_class
-        self.W = W
+    def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
+        return ModelConst(self.value, name=self.name)  # type: ignore
 
-        def _evaluate_kernel(**kwargs):
-            kernel = kernel_class(**kwargs).apply(x1=x[None, :], x2=x[:, None])
+    def update_from(self, param: ModelConst) -> ModelVar:
+        self.value = param.value  # type:ignore
+        return self
 
-            ID = jnp.eye(W.shape[1])
-            kernel_blockdiagonal = jnp.kron(ID, kernel)
 
-            IN = jnp.eye(x.shape[0])
-            W_kron = jnp.kron(W, IN)
+class ModelVar(TransformedVar):
+    def __init__(
+        self,
+        value: Any,
+        bijector: tfb.Bijector | None = tfb.Identity(),
+        name: str = "",
+    ) -> None:
+        super().__init__(value=value, bijector=bijector, name=name)
+        self.bijector = bijector
+        self.parameter_names = [find_param(self).name]
+        self.hyperparameter_names: list[str] = []
 
-            return W_kron @ kernel_blockdiagonal @ W_kron.T
+    def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
+        val = self.value  # type: ignore
+        bij = self.bijector
+        return ModelVar(val, bijector=bij, name=self.name)
 
-        calc = lsl.Calc(_evaluate_kernel, **kwargs)
+    def update_from(self, param: ModelVar) -> ModelVar:
+        if self.strong:
+            self.value = param.value  # type: ignore
+            return self
+        if self.transformed:
+            self.transformed.value = param.transformed.value
+            return self.update()
 
-        super().__init__(calc, name=name)
+        raise RuntimeError("Cannot update; variable is neither strong nor transformed.")
+
+
+class ParamPredictivePointProcessGP(lsl.Var):
+    def __init__(
+        self,
+        inducing_locs: lsl.Var | lsl.Node,
+        sample_locs: lsl.Var | lsl.Node,
+        kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
+        bijector: tfb.Bijector = tfb.Identity(),
+        name: str = "",
+        **kernel_params: lsl.Var | TransformedVar,
+    ) -> None:
+        kernel_uu = Kernel(
+            x1=inducing_locs,
+            x2=inducing_locs,
+            kernel_cls=kernel_cls,
+            **kernel_params,
+            name=f"{name}_kernel",
+        ).update()
+
+        kernel_du = Kernel(
+            x1=sample_locs,
+            x2=inducing_locs,
+            kernel_cls=kernel_cls,
+            **kernel_params,
+            name=f"{name}_kernel_latent_u",
+        ).update()
+
+        n_inducing_locs = kernel_uu.value.shape[0]
+
+        self.latent_var = lsl.param(
+            jnp.zeros((n_inducing_locs,)),
+            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            name=f"{name}_latent",
+        )
+
+        # a small value added to the diagonal of Kuu for numerical stability
+        salt = jnp.diag(jnp.full(shape=(n_inducing_locs,), fill_value=1e-6))
+
+        def _compute_param(latent_var, Kuu, Kdu):
+            Kuu = Kuu + salt
+            L = jnp.linalg.cholesky(Kuu)
+            Li = jnp.linalg.inv(L)
+
+            return bijector.forward(Kdu @ Li.T @ latent_var)
+
+        super().__init__(
+            lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du),
+            name=name,
+        )
+
+        self.bijector = bijector
+        self.kernel_params = kernel_params
+        self.kernel_cls = kernel_cls
+        self.inducing_locs = inducing_locs
+        self.sample_locs = sample_locs
+        self.K = n_inducing_locs
+        self.parameter_names = [self.latent_var.name]
+
+    @property
+    def hyperparameter_names(self):
+        return [find_param(param).name for param in self.kernel_params.values()]
+
+    def copy_for(
+        self, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> ParamPredictivePointProcessGP:
+        kernel_params = {
+            name: copy.deepcopy(param) for name, param in self.kernel_params.items()
+        }
+
+        sample_locs = (
+            sample_locs if sample_locs is not None else copy.deepcopy(self.sample_locs)
+        )
+
+        var = ParamPredictivePointProcessGP(
+            inducing_locs=copy.deepcopy(self.inducing_locs),
+            sample_locs=sample_locs,
+            kernel_cls=self.kernel_cls,
+            bijector=self.bijector,
+            name=self.name,
+            **kernel_params,
+        )
+
+        var.latent_var.value = self.latent_var.value
+
+        return var
+
+    def update_from(
+        self, param: ParamPredictivePointProcessGP
+    ) -> ParamPredictivePointProcessGP:
+        for name, kernel_param in param.kernel_params.items():
+            self.kernel_params[name].value = kernel_param.value
+            self.kernel_params[name].update()
+
+        self.latent_var.value = param.latent_var.value
+        self.update()
+
+        return self
 
 
 def brownian_motion_mat(nrows: int, ncols: int):
@@ -82,365 +207,224 @@ def rw_weight_matrix(D: int):
     return W
 
 
-def delta_param(
-    locs: Array,
-    D: int,
-    eta: lsl.Var,
-    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
-) -> lsl.Var:
+class RandomWalkParamPredictivePointProcessGP(lsl.Var):
     """
-    Dimension: (D-1, Nloc)
+    Assumes the intrinsic model of coregionalization.
+
+    Params
+    ------
+    D
+        Dimension of the random walk.
+    K
+        Number of inducing locations.
     """
 
-    kernel_args = dict()
-
-    amplitude_transformed = lsl.Var(1.0, name="amplitude_delta_transformed")
-    amplitude = lsl.Var(
-        lsl.Calc(jax.nn.softplus, amplitude_transformed), name="amplitude_delta"
-    )
-    kernel_args["amplitude"] = amplitude
-    kernel_args["length_scale"] = lsl.param(value=1.0, name="length_scale_delta")
-
-    latent_delta = lsl.param(
-        jnp.zeros((locs.shape[0] * (D - 2),)),
-        distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
-        name="latent_delta",
-    )
-
-    kernel = Kernel(
-        x=locs, kernel_class=kernel_class, **kernel_args, name="kernel_latent_delta"
-    )
-
-    def _L_fn(x):
-        augmented_x = x + jnp.diag(jnp.full(shape=(x.shape[0],), fill_value=1e-6))
-        return jnp.linalg.cholesky(augmented_x)
-
-    Linv = lsl.Var(lsl.Calc(_L_fn, kernel)).update()
-
-    W = rw_weight_matrix(D)
-
-    def _compute_delta(latent_delta, eta, L):
-        Wkron = jnp.kron(W, jnp.exp(eta) * L)
-        delta_long = Wkron @ latent_delta
-        return jnp.reshape(delta_long, (D - 1, locs.shape[0]))
-
-    delta = lsl.Var(
-        lsl.Calc(_compute_delta, latent_delta=latent_delta, eta=eta, L=Linv),
-        name="delta",
-    )
-
-    return delta
-
-
-@partial(jnp.vectorize, excluded=[1], signature="(d)->()")
-def sfn(exp_shape, dknots: float | Array):
-    order = 3
-    p = jnp.shape(exp_shape)[-1] + 1
-
-    outer_border = exp_shape[..., jnp.array([0, -1])] / 6
-    inner_border = 5 * exp_shape[..., jnp.array([1, -2])] / 6
-    middle = exp_shape[..., 2:-2]
-    summed_exp_shape = (
-        outer_border.sum(axis=-1, keepdims=True)
-        + inner_border.sum(axis=-1, keepdims=True)
-        + middle.sum(axis=-1, keepdims=True)
-    )
-
-    return jnp.squeeze((1 / ((p - order) * dknots)) * summed_exp_shape)
-
-
-def shape_coef(delta: lsl.Var, dknots: float | Array) -> lsl.Var:
-    def _compute_shape_coef(delta):
-        exp_delta = jnp.exp(delta)
-        slope_correction_factor = sfn(exp_delta.T, dknots)
-        return exp_delta.cumsum(axis=0) / jnp.expand_dims(slope_correction_factor, 0)
-
-    shape_coef = lsl.Var(lsl.Calc(_compute_shape_coef, delta), name="shape_coef")
-
-    return shape_coef
-
-
-def alpha_param(
-    locs: Array,
-    knots: Array,
-    name: str = "alpha",
-    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
-) -> lsl.Var:
-    """
-    Dimension: (Nloc,)
-    """
-    kernel_args = dict()
-    amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
-    amplitude = lsl.Var(
-        lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
-    )
-    kernel_args["amplitude"] = amplitude
-    kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
-    kernel = Kernel(
-        x=locs,
-        kernel_class=kernel_class,
-        **kernel_args,
-        name=f"kernel_{name}",
-    )
-
-    alpha = lsl.param(
-        jnp.zeros((locs.shape[0],)),
-        distribution=lsl.Dist(
-            tfd.MultivariateNormalFullCovariance, covariance_matrix=kernel
-        ),
-        name=f"{name}",
-    )
-
-    a = knots[4] - 2 * knots[3]
-
-    locshift = lsl.Var(lsl.Calc(lambda alpha: alpha - a, alpha), name="locshift")
-
-    return locshift
-
-
-def beta_param(
-    locs: Array,
-    name: str = "beta",
-    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
-) -> lsl.Var:
-    """
-    Dimension: (Nloc,)
-    """
-    kernel_args = dict()
-    amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
-    amplitude = lsl.Var(
-        lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
-    )
-    kernel_args["amplitude"] = amplitude
-    kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
-    kernel = Kernel(
-        x=locs,
-        kernel_class=kernel_class,
-        **kernel_args,
-        name=f"kernel_{name}",
-    )
-
-    beta = lsl.param(
-        jnp.zeros((locs.shape[0],)),
-        distribution=lsl.Dist(
-            tfd.MultivariateNormalFullCovariance, covariance_matrix=kernel
-        ),
-        name=f"{name}",
-    )
-
-    exp_beta = lsl.Var(lsl.Calc(jnp.exp, beta), name="exp_beta")
-
-    return exp_beta
-
-
-def eta_param(
-    locs: Array,
-    name: str = "eta",
-    kernel_class: type[tfk.AutoCompositeTensorPsdKernel] = tfk.ExponentiatedQuadratic,
-) -> lsl.Var:
-    """
-    Dimension: (Nloc,)
-    """
-    kernel_args = dict()
-    amplitude_transformed = lsl.Var(1.0, name=f"amplitude_{name}_transformed")
-    amplitude = lsl.Var(
-        lsl.Calc(jax.nn.softplus, amplitude_transformed), name=f"amplitude_{name}"
-    )
-    kernel_args["amplitude"] = amplitude
-    kernel_args["length_scale"] = lsl.param(value=1.0, name=f"length_scale_{name}")
-    kernel = Kernel(
-        x=locs,
-        kernel_class=kernel_class,
-        **kernel_args,
-        name=f"kernel_{name}",
-    )
-
-    eta = lsl.param(
-        jnp.zeros((locs.shape[0],)),
-        distribution=lsl.Dist(
-            tfd.MultivariateNormalFullCovariance,
-            loc=jnp.zeros(locs.shape[0]),
-            covariance_matrix=kernel,
-        ),
-        name=f"{name}",
-    )
-
-    return eta
-
-
-def trafo_coef(alpha: lsl.Var, exp_beta: lsl.Var, shape_coef: lsl.Var) -> lsl.Var:
-    """Dimension (Nloc, D)"""
-
-    def _assemble_trafo_coef(alpha, exp_beta, shape_coef):
-        alpha = jnp.expand_dims(alpha, 0)
-        scaled_shape = alpha + jnp.expand_dims(exp_beta, 0) * shape_coef
-        coef = jnp.r_[alpha, scaled_shape]
-        return coef.T
-
-    coef = lsl.Var(
-        lsl.Calc(_assemble_trafo_coef, alpha, exp_beta, shape_coef), name="trafo_coef"
-    )
-    return coef
-
-
-class Model:
     def __init__(
         self,
-        y: Array,
-        knots: Array,
-        locs: Array,
-        kernel_class: type[
-            tfk.AutoCompositeTensorPsdKernel
-        ] = tfk.ExponentiatedQuadratic,
-        extrap_transition_width: float = 0.3,
-    ) -> None:
-        """
-        kernel_class must take the arguments ``amplitude`` and ``length_scale``.
-        """
-        D = jnp.shape(knots)[0] - 4
-        dknots = jnp.diff(knots).mean()
-        self.knots = knots
-        self.nparam = D
-
-        self.eta = eta_param(locs, kernel_class=kernel_class).update()
-        self.delta = delta_param(locs, D, self.eta, kernel_class=kernel_class).update()
-        self.cumsum_exp_delta = shape_coef(self.delta, dknots).update()
-        self.exp_beta = beta_param(locs, kernel_class=kernel_class).update()
-        self.alpha = alpha_param(locs, knots, kernel_class=kernel_class).update()
-
-        self.coef = trafo_coef(
-            self.alpha, self.exp_beta, self.cumsum_exp_delta
-        ).update()
-
-        self.bspline = ptm.ExtrapBSplineApprox(
-            knots=knots, order=3, eps=extrap_transition_width
+        inducing_locs: Array,
+        sample_locs: Array,
+        D: int,
+        kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
+        name: str = "",
+        **kernel_params: lsl.Var | TransformedVar,
+    ):
+        kernel_uu = Kernel(
+            x1=inducing_locs,
+            x2=inducing_locs,
+            kernel_cls=kernel_cls,
+            **kernel_params,
+            name=f"{name}_kernel",
         )
 
-        basis_dot_and_deriv_fn = self.bspline.get_extrap_basis_dot_and_deriv_fn(
-            target_slope=1.0
+        kernel_du = Kernel(
+            x1=sample_locs,
+            x2=inducing_locs,
+            kernel_cls=kernel_cls,
+            **kernel_params,
+            name=f"{name}_kernel_latent_u",
         )
 
-        self.response_value = lsl.obs(y, name="response_hidden_value")
+        W = rw_weight_matrix(D)
 
-        self.normalization_and_deriv = lsl.Var(
+        nrow_W = W.shape[0]
+
+        n_inducing_locs = kernel_uu.value.shape[0]
+        n_sample_locs = kernel_du.value.shape[0]
+
+        latent_var = lsl.param(
+            jnp.zeros((n_inducing_locs * (W.shape[1]),)),
+            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            name=f"{name}_latent",
+        )
+
+        salt = jnp.diag(jnp.full(shape=(kernel_uu.value.shape[0],), fill_value=1e-6))
+
+        def _compute_param(latent_var, Kuu, Kdu):
+            Kuu = Kuu + salt
+            L = jnp.linalg.cholesky(Kuu)
+            Li = jnp.linalg.inv(L)
+
+            Kdu_uui = jnp.kron(W, (Kdu @ Li.T))
+            delta_long = Kdu_uui @ latent_var
+            delta_mat = jnp.reshape(delta_long, (nrow_W, n_sample_locs))
+
+            return delta_mat
+
+        super().__init__(
             lsl.Calc(
-                lambda y, c: basis_dot_and_deriv_fn(y.T, c),
-                self.response_value,
-                self.coef,
+                _compute_param,
+                latent_var=latent_var,
+                Kuu=kernel_uu,
+                Kdu=kernel_du,
             ),
-            name="normalization_and_deriv",
-        ).update()
-
-        self.normalization = lsl.Var(
-            lsl.Calc(lambda x: x[0].T, self.normalization_and_deriv),
-            name="normalization",
-        ).update()
-
-        self.normalization_deriv = lsl.Var(
-            lsl.Calc(lambda x: x[1].T, self.normalization_and_deriv),
-            name="normalization_deriv",
-        ).update()
-
-        self.refdist = tfd.Normal(loc=0.0, scale=1.0)
-        """
-        The reference distribution, currently fixed to the standard normal distribution.
-        """
-
-        response_dist = ptm.TransformationDist(
-            self.normalization, self.normalization_deriv, refdist=self.refdist
+            name=name,
         )
-        self.response = lsl.obs(y, response_dist, name="response").update()
-        """Response variable."""
+        self.update()
+
+        self.latent_var = latent_var
+        self.kernel_uu = kernel_uu
+        self.kernel_du = kernel_du
+        self.W = W
+        self.kernel_params = kernel_params
+        self.kernel_cls = kernel_cls
+        self.inducing_locs = inducing_locs
+        self.sample_locs = sample_locs
+        self.K = n_inducing_locs
+
+        self.parameter_names = [latent_var.name]
+
+    @property
+    def hyperparameter_names(self):
+        return [find_param(param).name for param in self.kernel_params.values()]
+
+
+class OnionCoefPredictivePointProcessGP(lsl.Var):
+    def __init__(
+        self,
+        latent_coef: RandomWalkParamPredictivePointProcessGP,
+        coef_spec: OnionCoef,
+        name: str = "",
+    ) -> None:
+        super().__init__(
+            lsl.Calc(lambda latent: coef_spec(latent.T).T, latent_coef).update(),
+            name=name,
+        )
+
+        self.coef_spec = coef_spec
+        self.latent_coef = latent_coef
+        self.parameter_names = latent_coef.parameter_names
+
+    @property
+    def hyperparameter_names(self):
+        return self.latent_coef.hyperparameter_names
 
     @classmethod
-    def from_nparam(
+    def new_from_locs(
         cls,
-        y: Array,
-        locs: Array,
-        nparam: int,
-        knots_lo: float,
-        knots_hi: float,
-        kernel_class: type[
-            tfk.AutoCompositeTensorPsdKernel
-        ] = tfk.ExponentiatedQuadratic,
-        extrap_transition_width: float = 0.3,
-    ) -> Model:
-        knots = ptm.kn(jnp.array([knots_lo, knots_hi]), order=3, n_params=nparam)
-        return cls(
-            y=y,
-            knots=knots,
-            locs=locs,
-            kernel_class=kernel_class,
-            extrap_transition_width=extrap_transition_width,
+        knots: OnionKnots,
+        inducing_locs: lsl.Var | lsl.Node,
+        sample_locs: lsl.Var | lsl.Node,
+        kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
+        name: str = "",
+        **kernel_params: lsl.Var | TransformedVar,
+    ) -> OnionCoefPredictivePointProcessGP:
+        coef_spec = OnionCoef(knots)
+
+        latent_coef = RandomWalkParamPredictivePointProcessGP(
+            inducing_locs=inducing_locs,
+            sample_locs=sample_locs,
+            D=knots.nparam + 1,
+            kernel_cls=kernel_cls,
+            name=f"{name}_log_increments",
+            **kernel_params,
         )
 
-    def build_graph(self):
-        graph = lsl.GraphBuilder().add(self.response).build_model()
-        return graph
+        return cls(coef_spec=coef_spec, latent_coef=latent_coef, name=name)
 
-    @property
-    def eta_param_name(self) -> str:
-        return self.eta.name
+    def copy_for(
+        self, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> OnionCoefPredictivePointProcessGP:
+        coef_spec = OnionCoef(self.coef_spec.knots)
 
-    @property
-    def eta_hyperparam_names(self) -> list[str]:
-        kernel_value = self.eta.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        amplitude_name = (
-            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        kernel_params = {
+            name: copy.deepcopy(param)
+            for name, param in self.latent_coef.kernel_params.items()
+        }
+
+        sample_locs = (
+            sample_locs
+            if sample_locs is not None
+            else copy.deepcopy(self.latent_coef.sample_locs)
         )
-        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
-        return [amplitude_name, length_scale_name]
 
-    @property
-    def delta_param_name(self) -> str:
-        return self.delta.value_node.kwinputs["latent_delta"].var.name
-
-    @property
-    def delta_hyperparam_names(self) -> list[str]:
-        L = self.delta.value_node.kwinputs["L"]
-        kernel_value = L.var.value_node.inputs[0].var.value_node
-        amplitude_name = (
-            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        latent_coef = RandomWalkParamPredictivePointProcessGP(
+            inducing_locs=copy.deepcopy(self.latent_coef.inducing_locs),
+            sample_locs=sample_locs,
+            D=self.coef_spec.knots.nparam + 1,
+            kernel_cls=self.latent_coef.kernel_cls,
+            name=f"{self.name}_log_increments",
+            **kernel_params,
         )
-        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
-        return [amplitude_name, length_scale_name]
 
-    @property
-    def alpha_param_name(self) -> str:
-        return self.alpha.value_node.inputs[0].var.name
+        latent_coef.latent_var.value = self.latent_coef.latent_var.value
 
-    @property
-    def alpha_hyperparam_names(self) -> list[str]:
-        alpha_var = self.alpha.value_node.inputs[0].var
-        kernel_value = alpha_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        amplitude_name = (
-            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        return OnionCoefPredictivePointProcessGP(
+            coef_spec=coef_spec, latent_coef=latent_coef, name=self.name
         )
-        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
-        return [amplitude_name, length_scale_name]
 
-    @property
-    def beta_param_name(self) -> str:
-        return self.exp_beta.value_node.inputs[0].var.name
+    def update_from(
+        self, coef: OnionCoefPredictivePointProcessGP
+    ) -> OnionCoefPredictivePointProcessGP:
+        for name, kernel_param in coef.latent_coef.kernel_params.items():
+            self.latent_coef.kernel_params[name].value = kernel_param.value
+            self.latent_coef.kernel_params[name].update()
 
-    @property
-    def beta_hyperparam_names(self) -> list[str]:
-        beta_var = self.exp_beta.value_node.inputs[0].var
-        kernel_value = beta_var.dist_node.kwinputs["covariance_matrix"].inputs[0]
-        amplitude_name = (
-            kernel_value.kwinputs["amplitude"].var.value_node.inputs[0].var.name
+        self.latent_coef.latent_var.value = coef.latent_coef.latent_var.value
+        self.latent_coef.update()
+        self.update()
+
+        return self
+
+    def spawn_intercept(
+        self, name: str = "intercept", **kernel_params
+    ) -> ParamPredictivePointProcessGP:
+        if not kernel_params:
+            kernel_params = self.latent_coef.kernel_params
+
+        intercept = ParamPredictivePointProcessGP(
+            inducing_locs=self.latent_coef.inducing_locs,
+            sample_locs=self.latent_coef.sample_locs,
+            kernel_cls=self.latent_coef.kernel_cls,
+            name=name,
+            **kernel_params,
         )
-        length_scale_name = kernel_value.kwinputs["length_scale"].var.name
-        return [amplitude_name, length_scale_name]
+
+        return intercept
+
+    def spawn_slope(
+        self,
+        bijector: tfb.Bijector = tfb.Softplus(),
+        name: str = "slope",
+        **kernel_params,
+    ) -> ParamPredictivePointProcessGP:
+        if not kernel_params:
+            kernel_params = self.latent_coef.kernel_params
+
+        slope = ParamPredictivePointProcessGP(
+            inducing_locs=self.latent_coef.inducing_locs,
+            sample_locs=self.latent_coef.sample_locs,
+            kernel_cls=self.latent_coef.kernel_cls,
+            name=name,
+            bijector=bijector,
+            **kernel_params,
+        )
+
+        return slope
 
 
-def predict_normalization_and_deriv(
-    graph: lsl.Model, y: Array, model_state: ModelState
-) -> Array:
-    """
-    y: (Nobs, Nloc)
-    """
-    graph.state = model_state
-    graph.vars["response_hidden_value"].value = y
-    graph.update()
-    return graph.vars["normalization"].value, graph.vars["normalization_deriv"].value
+class ModelOnionCoef(OnionCoefParam):
+    def __init__(self, knots: OnionKnots, name: str = "") -> None:
+        super().__init__(knots=knots, tau2=lsl.Var(1.0, name="tau2_onion"), name=name)
+
+        self.parameter_names: list[str] = [self.log_increments.transformed.name]
+        self.hyperparameter_names: list[str] = []

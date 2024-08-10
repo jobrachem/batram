@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_ptm as ptm
@@ -9,14 +11,15 @@ from liesel.goose.optim import OptimResult, optim_flat
 from liesel_ptm.nodes import TransformationDistLogDeriv
 from liesel_ptm.ptm_ls import NormalizationFn
 
-from .node_ip import Array
-from .optim import optim_loc_batched
-from .ppnode import (
+from .node import (
     ModelConst,
     ModelOnionCoef,
     OnionCoefPredictivePointProcessGP,
     ParamPredictivePointProcessGP,
 )
+from .optim import optim_loc_batched
+
+Array = Any
 
 
 class Model:

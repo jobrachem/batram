@@ -714,7 +714,13 @@ class SimpleTM(torch.nn.Module):
 
         return x_new
 
-    def sample_from_z(self, z, seed: int | None = None, fixed=torch.tensor([]), last_ind: int | None = None):
+    def sample_from_z(
+        self,
+        z,
+        seed: int | None = None,
+        fixed=torch.tensor([]),
+        last_ind: int | None = None,
+    ):
         """
         I'm not sure where this should exactly be implemented.
 
@@ -725,10 +731,9 @@ class SimpleTM(torch.nn.Module):
         """
         if last_ind is not None and last_ind < fixed.size(-1):
             raise ValueError("last_ind must be larger than conditioned field 'fixed'.")
-        
+
         if not len(fixed.size()) == 1:
             raise ValueError("'fixed' must be a 1d tensor.")
-
 
         if seed is not None:
             torch.manual_seed(seed)
@@ -758,7 +763,7 @@ class SimpleTM(torch.nn.Module):
         m = NN.shape[1]
         # loop over variables/locations
         x_new = torch.empty((num_samples, N))
-        x_new[:,:fixed.shape[0]] = fixed
+        x_new[:, : fixed.shape[0]] = fixed
 
         for i in range(fixed.size(0), last_ind):
             # predictive distribution for current sample
@@ -792,19 +797,14 @@ class SimpleTM(torch.nn.Module):
 
         return x_new
 
-    def inverse_map(
-        self,
-        z,
-        fixed=torch.tensor([]), 
-        last_ind: int | None = None
-    ):
+    def inverse_map(self, z, fixed=torch.tensor([]), last_ind: int | None = None):
         """
         Code mostly copy-and-pasted from cond_samp.
         """
 
         if last_ind is not None and last_ind < fixed.size(-1):
             raise ValueError("last_ind must be larger than conditioned field 'fixed'.")
-        
+
         if not len(fixed.size()) == 1:
             raise ValueError("'fixed' must be a 1d tensor.")
 
@@ -832,9 +832,9 @@ class SimpleTM(torch.nn.Module):
 
         if last_ind is None:
             last_ind = N
-        
+
         x_new = torch.empty((num_samples, N))
-        x_new[:,:fixed.shape[0]] = fixed
+        x_new[:, : fixed.shape[0]] = fixed
 
         for i in range(fixed.size(0), last_ind):
             # predictive distribution for current sample

@@ -616,8 +616,8 @@ def optim_loc_batched(
     # ---------------------------------------------------------------------------------
     # Define loss function(s)
 
-    n_train = model_train.vars["response"].value.shape[0]
-    n_validation = model_validation.vars["response"].value.shape[0]
+    n_train = jnp.shape(model_train.vars["response"].value)[0]
+    n_validation = jnp.shape(model_validation.vars["response"].value)[0]
 
     likelihood_scalar_validation = n_train / n_validation
 

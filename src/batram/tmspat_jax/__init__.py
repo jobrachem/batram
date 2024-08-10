@@ -1,7 +1,7 @@
 from liesel_ptm import TransformedVar
 
 from .model import Model, TransformationModel
-from .ppnode import (
+from .node import (
     ModelOnionCoef,
     ModelVar,
     OnionCoefPredictivePointProcessGP,
