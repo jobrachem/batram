@@ -14,6 +14,7 @@ from liesel_ptm.ptm_ls import NormalizationFn
 from .node import (
     ModelConst,
     ModelOnionCoef,
+    ModelVar,
     OnionCoefPredictivePointProcessGP,
     ParamPredictivePointProcessGP,
 )
@@ -24,7 +25,10 @@ Array = Any
 
 class Model:
     def __init__(
-        self, y: Array, tfp_dist_cls: type[tfd.Distribution], **params
+        self,
+        y: Array,
+        tfp_dist_cls: type[tfd.Distribution],
+        **params: ModelConst | ModelVar,
     ) -> None:
         self.params = params
         self.tfp_dist_cls = tfp_dist_cls
@@ -39,21 +43,17 @@ class Model:
         ).update()
         """Response variable."""
 
-        self.graph = None
-
-    def build_graph(self):
         self.graph = lsl.GraphBuilder().add(self.response).build_model()
-        return self.graph
 
     def param_names(self) -> list[str]:
-        param_names = []
-        for param in self.params:
+        param_names: list[str] = []
+        for param in self.params.values():
             param_names += param.parameter_names
         return list(set(param_names))
 
     def hyperparam_names(self) -> list[str]:
         hyper_param_names = []
-        for param in self.params:
+        for param in self.params.values():
             hyper_param_names += param.hyperparameter_names
         return list(set(hyper_param_names))
 
@@ -64,7 +64,8 @@ class Model:
         optimizer: optax.GradientTransformation | None = None,
         stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
-        graph = self.graph if graph is None else graph
+        if graph is None:
+            graph = self.graph
 
         result = optim_flat(
             graph,
@@ -118,13 +119,15 @@ class TransformationModel(Model):
         self.knots = knots
         self.coef = coef
 
-        self.intercept = intercept
         if intercept is None:
             self.intercept = ModelConst(0.0, name="intercept")
+        else:
+            self.intercept = intercept
 
-        self.slope = slope
         if slope is None:
             self.slope = ModelConst(1.0, name="slope")
+        else:
+            self.slope = slope
 
         self._extrap_transition_width = 0.3
         self.bspline = ptm.ExtrapBSplineApprox(
@@ -174,17 +177,17 @@ class TransformationModel(Model):
         self.response = lsl.obs(y, response_dist, name="response").update()
         """Response variable."""
 
-        self.graph = None
+        self.graph = lsl.GraphBuilder().add(self.response).build_model()
 
     def param_names(self) -> list[str]:
-        names = []
+        names: list[str] = []
         names += self.coef.parameter_names
         names += self.intercept.parameter_names
         names += self.slope.parameter_names
         return list(set(names))
 
     def hyperparam_names(self) -> list[str]:
-        names = []
+        names: list[str] = []
         names += self.coef.hyperparameter_names
         names += self.intercept.hyperparameter_names
         names += self.slope.hyperparameter_names
@@ -210,23 +213,20 @@ class TransformationModel(Model):
         optimizer: optax.GradientTransformation | None = None,
         stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
-        if not self.graph:
-            self.build_graph()
-
         locs = self.coef.latent_coef.sample_locs
 
         model_batched = self.copy_for(
             y=self.response.value[:, :loc_batch_size],
             sample_locs=lsl.Var(locs.value[:loc_batch_size, ...], name=locs.name),
         )
-        graph_batched = model_batched.build_graph()
+        graph_batched = model_batched.graph
 
         model_validation_batched = model_validation.copy_for(
             y=model_validation.response.value[:, :loc_batch_size],
             sample_locs=lsl.Var(locs.value[:loc_batch_size, ...], name=locs.name),
         )
 
-        graph_validation_batched = model_validation_batched.build_graph()
+        graph_validation_batched = model_validation_batched.graph
 
         result = optim_loc_batched(
             graph_batched,
@@ -249,8 +249,6 @@ class TransformationModel(Model):
         return result
 
     def transformation_and_logdet(self, y: Array) -> tuple[Array, Array]:
-        if not self.graph:
-            self.build_graph()
         _, vars_ = self.graph.copy_nodes_and_vars()
         graph_copy = lsl.GraphBuilder().add(vars_[self.response.name]).build_model()
         graph_copy.vars[self.response_value.name].value = y
@@ -287,7 +285,7 @@ class ChainedModel(Model):
     ) -> None:
         self.param = params
 
-        def normalization_and_logdet_fn(y, **params):
+        def apriori_transformation_and_logdet_fn(y, **params):
             dist = tfp_dist_cls(**params)
             u = dist.cdf(y)
 
@@ -299,8 +297,10 @@ class ChainedModel(Model):
 
         self.raw_response_value = lsl.obs(y, name="raw_response_value")
 
-        self.normalization_and_logdet = lsl.Var(
-            lsl.Calc(normalization_and_logdet_fn, self.raw_response_value, **params),
+        self.apriori_transformation_and_logdet = lsl.Var(
+            lsl.Calc(
+                apriori_transformation_and_logdet_fn, self.raw_response_value, **params
+            ),
             name="normalization_and_logdet",
         )
 
@@ -315,7 +315,7 @@ class ChainedModel(Model):
         )
 
         self.response_value = lsl.Var(
-            lsl.Calc(lambda x: x[0], self.normalization_and_logdet),
+            lsl.Calc(lambda x: x[0], self.apriori_transformation_and_logdet),
             name="response_hidden_value",
         )
 
@@ -333,12 +333,17 @@ class ChainedModel(Model):
             name="transformation",
         ).update()
 
-        def log_deriv(normalization_and_logdet, transformation_and_deriv):
-            return normalization_and_logdet[1] + jnp.log(transformation_and_deriv[1]).T
+        def log_deriv(apriori_transformation_and_logdet, transformation_and_deriv):
+            return (
+                apriori_transformation_and_logdet[1]
+                + jnp.log(transformation_and_deriv[1]).T
+            )
 
         self.log_det = lsl.Var(
             lsl.Calc(
-                log_deriv, self.normalization_and_logdet, self.transformation_and_deriv
+                log_deriv,
+                self.apriori_transformation_and_logdet,
+                self.transformation_and_deriv,
             ),
             name="log_det",
         ).update()
@@ -354,18 +359,18 @@ class ChainedModel(Model):
         self.response = lsl.obs(y, response_dist, name="response").update()
         """Response variable."""
 
-        self.graph = None
+        self.graph = lsl.GraphBuilder().add(self.response).build_model()
 
     def param_names(self) -> list[str]:
-        param_names = []
-        for param in self.params:
+        param_names: list[str] = []
+        for param in self.params.values():
             param_names += param.parameter_names
 
         return param_names + self.coef.parameter_names
 
     def hyperparam_names(self) -> list[str]:
-        hyper_param_names = []
-        for param in self.params:
+        hyper_param_names: list[str] = []
+        for param in self.params.values():
             hyper_param_names += param.hyperparameter_names
         return hyper_param_names + self.coef.hyper_parameter_names
 

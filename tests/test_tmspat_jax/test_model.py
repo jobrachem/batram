@@ -19,8 +19,8 @@ key = jrd.PRNGKey(42)
 
 class MockParam(lsl.Var):
     parameter = True
-    parameter_names = []
-    hyperparameter_names = []
+    parameter_names: list[str] = []
+    hyperparameter_names: list[str] = []
 
 
 class TestModel:
@@ -335,13 +335,14 @@ class TestChainedModel:
             coef=coef,
         )
 
-        model.build_graph()
+        loc_param2 = MockParam(jnp.full(shape=(y.shape[1],), fill_value=loc))
+        scale_param2 = MockParam(jnp.full(shape=(y.shape[1],), fill_value=scale))
 
         model2 = Model(
             y=y,
             tfp_dist_cls=tfd.Normal,
-            loc=loc_param,
-            scale=scale_param,
+            loc=loc_param2,
+            scale=scale_param2,
         )
 
         z, logdet = model.transformation_and_logdet(y)
