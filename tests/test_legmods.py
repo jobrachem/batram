@@ -150,8 +150,8 @@ def test_sample_from_z_with_fixed(simple_data: Data) -> None:
 
     with torch.no_grad():
         y = tm.sample_from_z(z, fixed=x_fix)
-    
-    assert torch.allclose(y[0,:x_fix.shape[0]], x_fix)
+
+    assert torch.allclose(y[0, : x_fix.shape[0]], x_fix)
 
 
 def test_legmods_nugget_mean(simple_data: Data) -> None:

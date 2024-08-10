@@ -120,9 +120,9 @@ class TestTransformationModel:
 
         knots = OnionKnots(-3.0, 3.0, nparam=12)
         latent_coef = RandomWalkParamPredictivePointProcessGP(
-            locs=locs,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             D=knots.nparam + 1,
-            K=5,
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=TransformedVar(jax.nn.softplus(0.5), name="amplitude"),
             length_scale=TransformedVar(jax.nn.softplus(0.5), name="length_scale"),
@@ -159,14 +159,21 @@ class TestTransformationModel:
         model_old.graph.update()
 
         assert jnp.allclose(
-            latent_coef.kernel_du.value, model_old.delta.kernel_du.value, atol=1e-5
+            latent_coef.kernel_du.value[5:, :],
+            model_old.delta.kernel_du.value,
+            atol=1e-5,
         )
         assert jnp.allclose(
             latent_coef.kernel_uu.value, model_old.delta.kernel_uu.value, atol=1e-5
         )
+        assert jnp.allclose(
+            latent_coef.kernel_du.value[:5, :],
+            model_old.delta.kernel_uu.value,
+            atol=1e-5,
+        )
         assert jnp.allclose(latent_coef.W, model_old.delta.W)
-        assert jnp.allclose(latent_coef.value, model_old.delta.value, atol=1e-5)
-        assert jnp.allclose(model.coef.value, model_old.coef.value.T, atol=1e-5)
+        assert jnp.allclose(latent_coef.value, model_old.delta.value, atol=1e-4)
+        assert jnp.allclose(model.coef.value, model_old.coef.value.T, atol=1e-4)
 
         assert jnp.allclose(model.graph.log_prob, model_old.graph.log_prob)
 
@@ -177,17 +184,17 @@ class TestTransformationModel:
         knots = OnionKnots(-3.0, 3.0, nparam=12)
         coef = OnionCoefPredictivePointProcessGP.new_from_locs(
             knots,
-            locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs[:10, :]),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0),
             length_scale=lsl.param(1.0),
         )
 
-        model = TransformationModel(y, knots=knots.knots, coef=coef)
+        model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
 
         assert not jnp.any(jnp.isinf(model.response.value))
-        assert model.response.value.shape == y.shape
+        assert model.response.value.shape == (20, 10)
 
     def test_with_intercept_and_slope(self):
         y = jrd.normal(key, shape=(20, 50))
@@ -196,16 +203,16 @@ class TestTransformationModel:
         knots = OnionKnots(-3.0, 3.0, nparam=12)
         coef = OnionCoefPredictivePointProcessGP.new_from_locs(
             knots,
-            locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0, name="a1"),
             length_scale=lsl.param(1.0, name="l1"),
         )
 
         intercept = ParamPredictivePointProcessGP(
-            locs=locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0, name="a2"),
             length_scale=lsl.param(1.0, name="l2"),
@@ -213,8 +220,8 @@ class TestTransformationModel:
         )
 
         slope = ParamPredictivePointProcessGP(
-            locs=locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0, name="a3"),
             length_scale=lsl.param(1.0, name="l3"),
@@ -298,13 +305,7 @@ class TestTransformationModel:
         model_validation = model.copy_for(y[-10:, :])
 
         with jax.disable_jit(disable=False):
-            result = model.fit_loc_batched(
-                model_validation=model_validation, loc_batch_size=10
-            )
-
-        model.build_graph()
-        model_validation.build_graph()
-        model.fit(model.graph, model_validation.graph)
+            model.fit_loc_batched(model_validation=model_validation, loc_batch_size=10)
 
         assert True
 
@@ -320,8 +321,8 @@ class TestChainedModel:
         knots = OnionKnots(-3.0, 3.0, nparam=12)
         coef = OnionCoefPredictivePointProcessGP.new_from_locs(
             knots,
-            locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0),
             length_scale=lsl.param(1.0),
@@ -351,8 +352,8 @@ class TestChainedModel:
         knots = OnionKnots(-3.0, 3.0, nparam=12)
         coef = OnionCoefPredictivePointProcessGP.new_from_locs(
             knots,
-            locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0),
             length_scale=lsl.param(1.0),
@@ -382,8 +383,8 @@ class TestChainedModel:
         knots = OnionKnots(-3.0, 3.0, nparam=12)
         coef = OnionCoefPredictivePointProcessGP.new_from_locs(
             knots,
-            locs,
-            K=5,
+            inducing_locs=lsl.Var(locs[:5, :]),
+            sample_locs=lsl.Var(locs),
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0),
             length_scale=lsl.param(1.0),

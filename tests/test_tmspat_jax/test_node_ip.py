@@ -263,6 +263,7 @@ class TestModel:
         assert model.eta.hyperparameter_names == [
             "amplitude_eta_transformed",
             "length_scale_eta_transformed",
+            "eta_mean",
         ]
 
     def test_delta_param_name(self, model):
