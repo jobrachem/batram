@@ -6,12 +6,11 @@ import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
 
-from batram.tmspat_jax.model import ChainedModel, Model, TransformationModel
+from batram.tmspat_jax.model import Model, TransformationModel
 from batram.tmspat_jax.node import (
     ModelOnionCoef,
     OnionCoefPredictivePointProcessGP,
     OnionKnots,
-    ParamPredictivePointProcessGP,
 )
 
 key = jrd.PRNGKey(42)
@@ -127,51 +126,7 @@ class TestTransformationModel:
         model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
 
         assert not jnp.any(jnp.isinf(model.response.value))
-        assert model.response.value.shape == (20, 10)
-
-    def test_with_intercept_and_slope(self):
-        y = jrd.normal(key, shape=(20, 50))
-        locs = jrd.uniform(key, shape=(y.shape[1], 2))
-
-        knots = OnionKnots(-3.0, 3.0, nparam=12)
-        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
-            knots,
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0, name="a1"),
-            length_scale=lsl.param(1.0, name="l1"),
-        )
-
-        intercept = ParamPredictivePointProcessGP(
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0, name="a2"),
-            length_scale=lsl.param(1.0, name="l2"),
-            name="intercept",
-        )
-
-        slope = ParamPredictivePointProcessGP(
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0, name="a3"),
-            length_scale=lsl.param(1.0, name="l3"),
-            name="slope",
-        )
-
-        model = TransformationModel(
-            y, knots=knots.knots, coef=coef, intercept=intercept, slope=slope
-        )
-        assert not jnp.any(jnp.isinf(model.response.value))
-        assert model.response.value.shape == y.shape
-
-        for name in ["a1", "a2", "a3", "l1", "l2", "l3"]:
-            assert name in model.hyperparam_names()
-
-        for name in coef.parameter_names + ["intercept_latent", "slope_latent"]:
-            assert name in model.param_names()
+        assert model.response.value.T.shape == (20, 10)
 
     def test_with_simple_transformation(self):
         y = jrd.normal(key, shape=(20, 50))
@@ -181,7 +136,7 @@ class TestTransformationModel:
         model = TransformationModel(y, knots=knots.knots, coef=coef)
 
         assert not jnp.any(jnp.isinf(model.response.value))
-        assert model.response.value.shape == y.shape
+        assert model.response.value.T.shape == y.shape
 
         assert model.param_names()[0] == coef.parameter_names[0]
 
@@ -262,7 +217,7 @@ class TestTransformationModel:
 
         assert not jnp.allclose(z, y[:, :10], atol=1e-3)
 
-        assert jnp.allclose(model.coef.value, model_new.coef.value[:, :10])
+        assert jnp.allclose(model.coef.value, model_new.coef.value[:10, :])
 
         assert jnp.allclose(z, z_new[:, :10])
         assert jnp.allclose(logdet, logdet_new[:, :10])
@@ -286,120 +241,12 @@ class TestTransformationModel:
         )
 
         model = TransformationModel(y[:-10, :], knots=knots.knots, coef=coef)
-        model_validation = model.copy_for(y[-10:, :])
 
         with jax.disable_jit(disable=False):
             model.fit_loc_batched(
-                y=y, locs=locs, model_validation=model_validation, loc_batch_size=10
+                train=y,
+                validation=y,
+                locs=locs,
             )
 
         assert True
-
-
-class TestChainedModel:
-    @pytest.mark.parametrize(
-        "loc,scale", [(0.0, 1.0), (0.0, 2.0), (1.0, 1.0), (1.0, 2.0)]
-    )
-    def test_init(self, loc, scale):
-        y = jrd.normal(key, shape=(20, 50))
-        locs = jrd.uniform(key, shape=(y.shape[1], 2))
-
-        knots = OnionKnots(-3.0, 3.0, nparam=12)
-        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
-            knots,
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0),
-            length_scale=lsl.param(1.0),
-        )
-
-        loc_param = MockParam(jnp.full(shape=(y.shape[1],), fill_value=loc))
-        scale_param = MockParam(jnp.full(shape=(y.shape[1],), fill_value=scale))
-
-        ChainedModel(
-            y=y,
-            tfp_dist_cls=tfd.Normal,
-            loc=loc_param,
-            scale=scale_param,
-            knots=knots.knots,
-            coef=coef,
-        )
-
-        assert True
-
-    @pytest.mark.parametrize(
-        "loc,scale", [(0.0, 1.0), (0.0, 2.0), (1.0, 1.0), (1.0, 2.0)]
-    )
-    def test_init_scalar(self, loc, scale):
-        y = jrd.normal(key, shape=(20, 50))
-        locs = jrd.uniform(key, shape=(y.shape[1], 2))
-
-        knots = OnionKnots(-3.0, 3.0, nparam=12)
-        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
-            knots,
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0),
-            length_scale=lsl.param(1.0),
-        )
-
-        loc_param = MockParam(loc)
-        scale_param = MockParam(scale)
-
-        ChainedModel(
-            y=y,
-            tfp_dist_cls=tfd.Normal,
-            loc=loc_param,
-            scale=scale_param,
-            knots=knots.knots,
-            coef=coef,
-        )
-
-        assert True
-
-    @pytest.mark.parametrize(
-        "loc,scale", [(0.0, 1.0), (0.0, 2.0), (1.0, 1.0), (1.0, 2.0)]
-    )
-    def test_transformation(self, loc, scale):
-        y = jrd.normal(key, shape=(20, 50))
-        locs = jrd.uniform(key, shape=(y.shape[1], 2))
-
-        knots = OnionKnots(-3.0, 3.0, nparam=12)
-        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
-            knots,
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0),
-            length_scale=lsl.param(1.0),
-        )
-
-        loc_param = MockParam(jnp.full(shape=(y.shape[1],), fill_value=loc))
-        scale_param = MockParam(jnp.full(shape=(y.shape[1],), fill_value=scale))
-
-        model = ChainedModel(
-            y=y,
-            tfp_dist_cls=tfd.Normal,
-            loc=loc_param,
-            scale=scale_param,
-            knots=knots.knots,
-            coef=coef,
-        )
-
-        loc_param2 = MockParam(jnp.full(shape=(y.shape[1],), fill_value=loc))
-        scale_param2 = MockParam(jnp.full(shape=(y.shape[1],), fill_value=scale))
-
-        model2 = Model(
-            y=y,
-            tfp_dist_cls=tfd.Normal,
-            loc=loc_param2,
-            scale=scale_param2,
-        )
-
-        z, logdet = model.transformation_and_logdet(y)
-        z2, logdet2 = model2.transformation_and_logdet(y)
-
-        assert jnp.allclose(z, z2, atol=1e-5)
-        assert jnp.allclose(logdet, logdet2, atol=1e-5)

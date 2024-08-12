@@ -306,7 +306,7 @@ class OnionCoefPredictivePointProcessGP(lsl.Var):
         name: str = "",
     ) -> None:
         super().__init__(
-            lsl.Calc(lambda latent: coef_spec(latent.T).T, latent_coef).update(),
+            lsl.Calc(lambda latent: coef_spec(latent.T), latent_coef).update(),
             name=name,
         )
 

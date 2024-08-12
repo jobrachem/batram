@@ -371,10 +371,12 @@ def optim_flat(
         return -log_prob
 
     def _neg_log_prob_train(position: Position):
-        updated_state = interface_validation.update_state(position, model_train.state)
+        updated_state = interface_train.update_state(position, model_train.state)
         return -updated_state["_model_log_prob"].value
 
-    def _neg_log_prob_validation(position: Position):
+    def _neg_log_prob_validation(
+        position: Position, batch_indices: Array | None = None
+    ):
         updated_state = interface_validation.update_state(
             position, model_validation.state
         )
@@ -553,8 +555,8 @@ def optim_flat(
 
 
 def optim_loc_batched(
-    model_train: Model,
-    response: Var,
+    model: Model,
+    response_train: Var,
     locs: Var,
     params: Sequence[str],
     optimizer: optax.GradientTransformation | None = None,
@@ -562,7 +564,7 @@ def optim_loc_batched(
     loc_batch_size: int | None = None,
     batch_seed: int | None = None,
     save_position_history: bool = True,
-    model_validation: Model | None = None,
+    response_validation: Var | None = None,
     restore_best_position: bool = True,
     prune_history: bool = True,
     n_train: int | None = None,
@@ -586,67 +588,118 @@ def optim_loc_batched(
         stopper = Stopper(max_iter=100, patience=10)
 
     user_patience = stopper.patience
-    if model_validation is None:
-        model_validation = model_train
+
+    if response_validation is None:
+        response_validation = response_train
         stopper.patience = stopper.max_iter
 
     if optimizer is None:
         optimizer = optax.adam(learning_rate=1e-2)
 
-    nloc = locs.value[0]
+    nloc = locs.value.shape[0]
 
     batch_size = loc_batch_size if loc_batch_size is not None else nloc
 
-    interface_train = LieselInterface(model_train)
-    position = interface_train.extract_position(params, model_train.state)
-    interface_train._model.auto_update = False
-
-    interface_validation = LieselInterface(model_validation)
-    interface_validation._model.auto_update = False
+    interface = LieselInterface(model)
+    position = interface.extract_position(params, model.state)
+    interface._model.auto_update = False
 
     # ---------------------------------------------------------------------------------
     # Validate model log prob decomposition
-    _validate_log_prob_decomposition(
-        interface_train, position=position, state=model_train.state
-    )
-    _validate_log_prob_decomposition(
-        interface_validation, position=position, state=model_validation.state
-    )
+    _validate_log_prob_decomposition(interface, position=position, state=model.state)
 
     # ---------------------------------------------------------------------------------
     # Define loss function(s)
 
-    n_train = jnp.shape(model_train.vars["response"].value)[0]
-    n_validation = jnp.shape(model_validation.vars["response"].value)[0]
+    n_train = jnp.shape(response_train.value)[1]
+    n_validation = jnp.shape(response_validation.value)[1]
 
     likelihood_scalar_validation = n_train / n_validation
+    n_batches = nloc // batch_size
 
-    def _batched_neg_log_prob(position: Position, batch_indices: Array | None = None):
-        if batch_indices is not None:
-            batched_response = {response.name: response.value[:, batch_indices]}
-            batched_location = {locs.name: locs.value[batch_indices, ...]}
-            position = position | batched_response | batched_location  # type: ignore
+    def _neg_log_prob_batch_train(
+        position: Position, response_train: Var, batch_indices: Array
+    ):
+        batched_response = {response_train.name: response_train.value[:, batch_indices]}
+        batched_location = {locs.name: locs.value[batch_indices, ...]}
+        position = position | batched_response | batched_location  # type: ignore
 
-        updated_state = interface_train.update_state(position, model_train.state)
+        updated_state = interface.update_state(position, model.state)
         log_lik = updated_state["_model_log_lik"].value
         log_prior = updated_state["_model_log_prior"].value
-        log_prob = log_lik + log_prior
-        return -log_prob
+        neg_log_prob_train = -(log_lik + log_prior)
 
-    def _neg_log_prob_train(position: Position):
-        updated_state = interface_validation.update_state(position, model_train.state)
-        return -updated_state["_model_log_prob"].value
+        return neg_log_prob_train
 
-    def _neg_log_prob_validation(position: Position):
-        updated_state = interface_validation.update_state(
-            position, model_validation.state
+    def _neg_log_prob_batch(
+        position: Position,
+        response_train: Var,
+        response_validation: Var,
+        batch_indices: Array,
+    ):
+        batched_response = {response_train.name: response_train.value[:, batch_indices]}
+        batched_location = {locs.name: locs.value[batch_indices, ...]}
+        position = position | batched_response | batched_location  # type: ignore
+
+        updated_state = interface.update_state(position, model.state)
+        log_lik = updated_state["_model_log_lik"].value
+        log_prior = updated_state["_model_log_prior"].value
+        neg_log_prob_train = -(log_lik + log_prior)
+
+        batched_response_validation = {
+            response_validation.name: response_validation.value[:, batch_indices]
+        }
+        updated_state = interface.update_state(
+            batched_response_validation, updated_state
         )
         log_lik = likelihood_scalar_validation * updated_state["_model_log_lik"].value
         log_prior = updated_state["_model_log_prior"].value
-        log_prob = log_lik + log_prior
-        return -log_prob
+        neg_log_prob_validation = -(log_lik + log_prior)
 
-    neg_log_prob_grad = jax.grad(_batched_neg_log_prob, argnums=0)
+        return neg_log_prob_train, neg_log_prob_validation
+
+    def _neg_log_prob(
+        position: Position,
+        response_train: Var,
+        response_validation: Var,
+        batches: Array,
+    ):
+        neg_log_prob_train_batches = jnp.empty(shape=(n_batches,))
+        neg_log_prob_validation_batches = jnp.empty(shape=(n_batches,))
+
+        def body_fun(i, val):
+            neg_log_prob_train_batches, neg_log_prob_validation_batches, batches = val
+            nlp_i_train, nlp_i_validation = _neg_log_prob_batch(
+                position=position,
+                response_train=response_train,
+                response_validation=response_validation,
+                batch_indices=batches[i],
+            )
+            neg_log_prob_train_batches = neg_log_prob_train_batches.at[i].set(
+                nlp_i_train
+            )
+            neg_log_prob_validation_batches = neg_log_prob_validation_batches.at[i].set(
+                nlp_i_validation
+            )
+            return neg_log_prob_train_batches, neg_log_prob_validation_batches, batches
+
+        init_val = (
+            neg_log_prob_train_batches,
+            neg_log_prob_validation_batches,
+            batches,
+        )
+
+        neg_log_prob_train_batches, neg_log_prob_validation_batches, _ = (
+            jax.lax.fori_loop(
+                lower=0, upper=n_batches, body_fun=body_fun, init_val=init_val
+            )
+        )
+
+        return jnp.sum(neg_log_prob_train_batches), jnp.sum(
+            neg_log_prob_validation_batches
+        )
+
+    neg_log_prob_grad_batch = jax.grad(_neg_log_prob_batch_train, argnums=0)
 
     # ---------------------------------------------------------------------------------
     # Initialize history
@@ -660,11 +713,21 @@ def optim_loc_batched(
             name: jnp.zeros((stopper.max_iter,) + jnp.shape(value))
             for name, value in position.items()
         }
+        history["position"] = jax.tree.map(
+            lambda d, pos: d.at[0].set(pos), history["position"], position
+        )
     else:
         history["position"] = None
 
-    loss_train_start = _neg_log_prob_train(position=position)
-    loss_validation_start = _neg_log_prob_validation(position=position)
+    batches = _generate_batch_indices(
+        key=jax.random.PRNGKey(batch_seed), n=nloc, batch_size=batch_size
+    )
+    loss_train_start, loss_validation_start = _neg_log_prob(
+        position=position,
+        response_train=response_train,
+        response_validation=response_validation,
+        batches=batches,
+    )
     history["loss_train"] = history["loss_train"].at[0].set(loss_train_start)
     history["loss_validation"] = (
         history["loss_validation"].at[0].set(loss_validation_start)
@@ -704,7 +767,7 @@ def optim_loc_batched(
 
     def body_fun(val: dict):
         _, subkey = jax.random.split(val["key"])
-        batches = _generate_batch_indices(key=subkey, n=n_train, batch_size=batch_size)
+        batches = _generate_batch_indices(key=subkey, n=nloc, batch_size=batch_size)
 
         # -----------------------------------------------------------------------------
         # Loop over batches
@@ -712,7 +775,9 @@ def optim_loc_batched(
         def _fori_body(i, val):
             batch = batches[i]
             pos = val["position"]
-            grad = neg_log_prob_grad(pos, batch_indices=batch)
+            grad = neg_log_prob_grad_batch(
+                pos, response_train=response_train, batch_indices=batch
+            )
             updates, opt_state = optimizer.update(grad, val["opt_state"], params=pos)
             val["position"] = optax.apply_updates(pos, updates)
             val["opt_state"] = opt_state
@@ -725,13 +790,18 @@ def optim_loc_batched(
 
         # -----------------------------------------------------------------------------
         # Save values and increase counter
+        val["while_i"] += 1
 
-        loss_train = _neg_log_prob_train(val["position"])
+        loss_train, loss_validation = _neg_log_prob(
+            val["position"],
+            response_train=response_train,
+            response_validation=response_validation,
+            batches=batches,
+        )
+
         val["history"]["loss_train"] = (
             val["history"]["loss_train"].at[val["while_i"]].set(loss_train)
         )
-
-        loss_validation = _neg_log_prob_validation(val["position"])
         val["history"]["loss_validation"] = (
             val["history"]["loss_validation"].at[val["while_i"]].set(loss_validation)
         )
@@ -743,7 +813,6 @@ def optim_loc_batched(
             )
 
         jax.debug.callback(tqdm_callback, val)
-        val["while_i"] += 1
         return val
 
     # ---------------------------------------------------------------------------------
@@ -751,7 +820,7 @@ def optim_loc_batched(
 
     val = jax.lax.while_loop(
         cond_fun=lambda val: stopper.continue_(
-            jnp.clip(val["while_i"] - 1, min=0), val["history"]["loss_validation"]
+            val["while_i"], val["history"]["loss_validation"]
         ),
         body_fun=body_fun,
         init_val=init_val,
@@ -773,7 +842,7 @@ def optim_loc_batched(
     else:
         final_position = val["position"]
 
-    final_state = interface_train.update_state(final_position, model_train.state)
+    final_state = interface.update_state(final_position, model.state)
 
     # ---------------------------------------------------------------------------------
     # Set unused values in history to nan
