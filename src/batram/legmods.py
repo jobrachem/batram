@@ -895,6 +895,7 @@ class SimpleTM(torch.nn.Module):
         test_data: Data | None = None,
         optimizer: None | torch.optim.Optimizer = None,
         scheduler: None | torch.optim.lr_scheduler.LRScheduler = None,
+        eta_min: float = 0.0,
         stopper: None | PEarlyStopper = None,
         silent: bool = False,
     ):
@@ -930,7 +931,7 @@ class SimpleTM(torch.nn.Module):
             optimizer = torch.optim.Adam(self.parameters(), lr=init_lr)
             if scheduler is None:
                 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=num_iter
+                    optimizer, T_max=num_iter, eta_min=eta_min
                 )
 
         if stopper is not None and test_data is None:
