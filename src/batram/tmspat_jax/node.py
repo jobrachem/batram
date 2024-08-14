@@ -257,7 +257,7 @@ class RandomWalkParamPredictivePointProcessGP(lsl.Var):
             name=f"{name}_latent",
         )
 
-        salt = jnp.diag(jnp.full(shape=(kernel_uu.value.shape[0],), fill_value=1e-6))
+        salt = jnp.eye(kernel_uu.value.shape[0]) * 1e-6
 
         def _compute_param(latent_var, Kuu, Kdu):
             Kuu = Kuu + salt
