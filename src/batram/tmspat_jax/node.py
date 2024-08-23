@@ -50,6 +50,9 @@ class Kernel(lsl.Var):
 
 
 class ModelConst(lsl.Var):
+    """
+    A variable that holds a constant value. This value is not fitted.
+    """
     def __init__(
         self,
         value: Any,
@@ -61,6 +64,9 @@ class ModelConst(lsl.Var):
 
     def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
         return ModelConst(self.value, name=self.name)  # type: ignore
+    
+    def set_locs(self, sample_locs: Array) -> ModelConst:
+        return self
 
     def update_from(self, param: ModelConst) -> ModelVar:
         self.value = param.value  # type:ignore
@@ -68,6 +74,10 @@ class ModelConst(lsl.Var):
 
 
 class ModelVar(TransformedVar):
+    """
+    A variable is constant across locations. 
+    Can have a bijector. Does not have hyperparameters.
+    """
     def __init__(
         self,
         value: Any,
@@ -83,6 +93,9 @@ class ModelVar(TransformedVar):
         val = self.value  # type: ignore
         bij = self.bijector
         return ModelVar(val, bijector=bij, name=self.name)
+    
+    def set_locs(self, sample_locs: Array) -> ModelConst:
+        return self
 
     def update_from(self, param: ModelVar) -> ModelVar:
         if self.strong:
@@ -103,6 +116,7 @@ class ParamPredictivePointProcessGP(lsl.Var):
         kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
         bijector: tfb.Bijector = tfb.Identity(),
         name: str = "",
+        expand_dims: bool = True,
         **kernel_params: lsl.Var | TransformedVar,
     ) -> None:
         kernel_uu = Kernel(
@@ -132,15 +146,22 @@ class ParamPredictivePointProcessGP(lsl.Var):
         # a small value added to the diagonal of Kuu for numerical stability
         salt = jnp.diag(jnp.full(shape=(n_inducing_locs,), fill_value=1e-6))
 
-        def _compute_param(latent_var, Kuu, Kdu):
+        self.mean = lsl.param(0.0, name=f"{name}_mean")
+
+        def _compute_param(latent_var, Kuu, Kdu, mean):
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
             Li = jnp.linalg.inv(L)
-
-            return bijector.forward(Kdu @ Li.T @ latent_var)
+            
+            value = bijector.forward(Kdu @ Li.T @ latent_var)
+            
+            if expand_dims:
+                value = jnp.expand_dims(value, -1)
+            
+            return value + mean
 
         super().__init__(
-            lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du),
+            lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du, self.mean),
             name=name,
         )
 
@@ -150,7 +171,7 @@ class ParamPredictivePointProcessGP(lsl.Var):
         self.inducing_locs = inducing_locs
         self.sample_locs = sample_locs
         self.K = n_inducing_locs
-        self.parameter_names = [self.latent_var.name]
+        self.parameter_names = [self.latent_var.name, self.mean.name]
 
     @property
     def hyperparameter_names(self):
@@ -179,6 +200,10 @@ class ParamPredictivePointProcessGP(lsl.Var):
         var.latent_var.value = self.latent_var.value
 
         return var
+    
+    def set_locs(self, sample_locs: Array) -> ModelConst:
+        self.sample_locs.value = sample_locs
+        return self.update()
 
     def update_from(
         self, param: ParamPredictivePointProcessGP

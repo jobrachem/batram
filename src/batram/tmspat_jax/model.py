@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-
+from functools import partial
 import jax
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -10,13 +10,14 @@ import optax
 import tensorflow_probability.substrates.jax.distributions as tfd
 from liesel.goose.optim import OptimResult, optim_flat
 from liesel_ptm.bsplines import ExtrapBSplineApprox
-from liesel_ptm.dist import TransformationDist
+from liesel_ptm.dist import TransformationDist, LocScaleTransformationDist
 
 from .node import (
     ModelConst,
     ModelOnionCoef,
     ModelVar,
     OnionCoefPredictivePointProcessGP,
+    ParamPredictivePointProcessGP,
 )
 from .optim import optim_loc_batched
 
@@ -113,20 +114,37 @@ class TransformationModel(Model):
         y: Array,
         knots: Array,
         coef: OnionCoefPredictivePointProcessGP | ModelOnionCoef,
+        parametric_distribution: type[tfd.Distribution] | None = None,
+        to_float32: bool = True,
+        **parametric_distribution_kwargs: (
+            ModelConst | ModelVar | ParamPredictivePointProcessGP
+        ),
     ) -> None:
         self.knots = knots
         self.coef = coef
+        self.parametric_distribution_kwargs = parametric_distribution_kwargs
 
         bspline = ExtrapBSplineApprox(knots=knots, order=3)
         self.fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+        self.parametric_distribution = parametric_distribution
+
+        self.dist_class = partial(
+            TransformationDist,
+            knots=knots,
+            basis_dot_and_deriv_fn=self.fn,
+            parametric_distribution=self.parametric_distribution,
+        )
 
         response_dist = lsl.Dist(
-            TransformationDist, knots=knots, coef=coef, basis_dot_and_deriv_fn=self.fn
+            self.dist_class,
+            coef=coef,
+            **parametric_distribution_kwargs,
         )
         self.response = lsl.obs(y.T, response_dist, name="response").update()
         """Response variable."""
 
-        self.graph = lsl.GraphBuilder().add(self.response).build_model()
+        gb = lsl.GraphBuilder(to_float32=to_float32).add(self.response)
+        self.graph = gb.build_model()
 
     def param_names(self) -> list[str]:
         names: list[str] = []
@@ -136,14 +154,26 @@ class TransformationModel(Model):
     def hyperparam_names(self) -> list[str]:
         names: list[str] = []
         names += self.coef.hyperparameter_names
+        for var_ in self.parametric_distribution_kwargs.values():
+            names.append(var_.hyperparameter_names)
         return list(set(names))
 
     def copy_for(
         self, y: Array, sample_locs: lsl.Var | lsl.Node | None = None
     ) -> TransformationModel:
         coef = self.coef.copy_for(sample_locs)
+        parametric_distributionargs = {
+            name: var_.copy_for(sample_locs)
+            for name, var_ in self.parametric_distribution_kwargs.items()
+        }
 
-        model = TransformationModel(y=y, knots=self.knots, coef=coef)
+        model = TransformationModel(
+            y=y,
+            knots=self.knots,
+            coef=coef,
+            parametric_distribution=self.parametric_distribution,
+            **parametric_distributionargs,
+        )
 
         return model
 
@@ -151,20 +181,50 @@ class TransformationModel(Model):
         self,
         train: Array,
         validation: Array,
-        locs: Array,
+        locs: lsl.Var,
         optimizer: optax.GradientTransformation | None = None,
         stopper: ptm.Stopper | None = None,
     ) -> OptimResult:
-        locs_name = self.coef.latent_coef.sample_locs.name
 
         result = optim_loc_batched(
             model=self.graph,
-            params=self.param_names() + self.hyperparam_names(),
+            params=self.coef.parameter_names + self.coef.hyperparameter_names,
             stopper=stopper,
             optimizer=optimizer,
             response_train=lsl.Var(jnp.asarray(train.T), name="response"),
             response_validation=lsl.Var(jnp.asarray(validation.T), name="response"),
-            locs=lsl.Var(jnp.asarray(locs), name=locs_name),
+            locs=locs,
+            loc_batch_size=self.response.value.shape[0],
+        )
+
+        self.graph.state = result.model_state
+        self.graph.update()
+
+        return result
+
+    def fit_parametric_distributionloc_batched(
+        self,
+        train: Array,
+        validation: Array,
+        locs: lsl.Var,
+        optimizer: optax.GradientTransformation | None = None,
+        stopper: ptm.Stopper | None = None,
+    ) -> OptimResult:
+
+        params = []
+        hyper_params = []
+        for var_ in self.parametric_distribution_kwargs.values():
+            params += var_.parameter_names
+            hyper_params += var_.hyperparameter_names
+
+        result = optim_loc_batched(
+            model=self.graph,
+            params=params + hyper_params,
+            stopper=stopper,
+            optimizer=optimizer,
+            response_train=lsl.Var(jnp.asarray(train.T), name="response"),
+            response_validation=lsl.Var(jnp.asarray(validation.T), name="response"),
+            locs=locs,
             loc_batch_size=self.response.value.shape[0],
         )
 
@@ -198,12 +258,19 @@ class TransformationModel(Model):
         _, _vars = self.graph.copy_nodes_and_vars()
         graph = lsl.GraphBuilder().add(_vars["response"]).build_model()
         coef = graph.vars[self.coef.name]
+        parametric_distributionargs = {
+            name: graph.vars[name] for name in self.parametric_distribution_kwargs
+        }
 
         def one_batch(y, locs):
             coef.latent_coef.sample_locs.value = locs
-            dist = TransformationDist(
-                self.knots, coef.value, basis_dot_and_deriv_fn=self.fn
-            )
+
+            parametric_distributionvalues = dict()
+            for name, var_ in parametric_distributionargs:
+                var_.set_locs(locs)
+                parametric_distributionvalues[name] = var_.value
+
+            dist = self.dist_class(coef=coef.value, **parametric_distributionvalues)
             z, logdet = dist.transformation_and_logdet(y.T)
             return z.T, logdet.T
 
@@ -231,9 +298,15 @@ class TransformationModel(Model):
         model_last_batch = self.copy_for(
             y=y_last_batch, sample_locs=lsl.Var(locs_last_batch, name="locs")
         )
-        dist = TransformationDist(
-            self.knots, model_last_batch.coef.value, basis_dot_and_deriv_fn=self.fn
+        parametric_distributionargs_last_batch = {
+            name: model_last_batch.vars[name].value
+            for name in self.parametric_distribution_kwargs
+        }
+
+        dist = self.dist_class(
+            coef=model_last_batch.coef.value, **parametric_distributionargs_last_batch
         )
+
         z_i, z_logdet_i = dist.transformation_and_logdet(y_last_batch.T)
 
         z = z.at[:, last_batch_indices].set(z_i.T)
@@ -267,15 +340,19 @@ class TransformationModel(Model):
         _, _vars = self.graph.copy_nodes_and_vars()
         graph = lsl.GraphBuilder().add(_vars["response"]).build_model()
         coef = graph.vars[self.coef.name]
+        parametric_distributionargs = {
+            name: graph.vars[name] for name in self.parametric_distribution_kwargs
+        }
 
         def one_batch(z, locs):
             coef.latent_coef.sample_locs.value = locs
 
-            dist = TransformationDist(
-                knots=self.knots,
-                coef=coef.update().value,
-                basis_dot_and_deriv_fn=self.fn,
-            )
+            parametric_distributionvalues = dict()
+            for name, var_ in parametric_distributionargs:
+                var_.set_locs(locs)
+                parametric_distributionvalues[name] = var_.value
+
+            dist = self.dist_class(coef=coef.update().value, **parametric_distributionvalues)
 
             y = dist.inverse_transformation(z.T)
 
@@ -300,12 +377,59 @@ class TransformationModel(Model):
         model_last_batch = self.copy_for(
             y=z_last_batch, sample_locs=lsl.Var(locs_last_batch, name="locs")
         )
-        dist = TransformationDist(
-            knots=self.knots,
-            coef=model_last_batch.coef.update().value,
-            basis_dot_and_deriv_fn=self.fn,
+        parametric_distributionargs_last_batch = {
+            name: model_last_batch.vars[name].value
+            for name in self.parametric_distribution_kwargs
+        }
+
+        dist = self.dist_class(
+            coef=model_last_batch.coef.value, **parametric_distributionargs_last_batch
         )
+
         y_i = dist.inverse_transformation(z_last_batch.T)
         y = y.at[:, last_batch_indices].set(y_i.T)
 
         return y
+
+
+class LocScaleTransformationModel(TransformationModel):
+    """
+    Dedicated :class:`.TransformationModel` for location-scale
+    """
+    def __init__(
+        self,
+        y: Array,
+        knots: Array,
+        coef: OnionCoefPredictivePointProcessGP | ModelOnionCoef,
+        loc: (
+            ModelConst | ModelVar | ParamPredictivePointProcessGP
+        ),
+        scale: (
+            ModelConst | ModelVar | ParamPredictivePointProcessGP
+        ),
+    ) -> None:
+        self.knots = knots
+        self.coef = coef
+        self.parametric_distribution_kwargs = {"loc": loc, "scale": scale}
+        self.loc = loc
+        self.scale = scale
+
+        bspline = ExtrapBSplineApprox(knots=knots, order=3)
+        self.fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+        self.parametric_distribution = tfd.Normal
+
+        self.dist_class = partial(
+            LocScaleTransformationDist,
+            knots=knots,
+            basis_dot_and_deriv_fn=self.fn,
+        )
+
+        response_dist = lsl.Dist(
+            self.dist_class,
+            coef=coef,
+            **self.parametric_distribution_kwargs,
+        )
+        self.response = lsl.obs(y.T, response_dist, name="response").update()
+        """Response variable."""
+
+        self.graph = lsl.GraphBuilder().add(self.response).build_model()

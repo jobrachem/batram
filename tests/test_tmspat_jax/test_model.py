@@ -4,13 +4,22 @@ import jax.random as jrd
 import liesel.model as lsl
 import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
+import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.math.psd_kernels as tfk
+from liesel.goose.optim import Stopper
 
-from batram.tmspat_jax.model import Model, TransformationModel
+from batram.tmspat_jax.model import (
+    Model,
+    TransformationModel,
+    LocScaleTransformationModel,
+)
 from batram.tmspat_jax.node import (
     ModelOnionCoef,
     OnionCoefPredictivePointProcessGP,
     OnionKnots,
+    ModelConst,
+    ModelVar,
+    ParamPredictivePointProcessGP
 )
 
 key = jrd.PRNGKey(42)
@@ -230,10 +239,11 @@ class TestTransformationModel:
         locs = jrd.uniform(key, shape=(y.shape[1], 2))
 
         knots = OnionKnots(-3.0, 3.0, nparam=12)
+        locs_var = lsl.Var(locs, name="locs")
         coef = OnionCoefPredictivePointProcessGP.new_from_locs(
             knots,
             inducing_locs=lsl.Var(locs[:10, :], name="inducing_locs"),
-            sample_locs=lsl.Var(locs, name="locs"),
+            sample_locs=locs_var,
             kernel_cls=tfk.ExponentiatedQuadratic,
             amplitude=lsl.param(1.0, name="amplitude"),
             length_scale=lsl.param(1.0, name="length_scale"),
@@ -246,7 +256,170 @@ class TestTransformationModel:
             model.fit_loc_batched(
                 train=y,
                 validation=y,
-                locs=locs,
+                locs=locs_var,
             )
 
         assert True
+
+    def test_fit_loc_scale(self) -> None:
+        true_loc = 3.0
+        true_scale = 1.3
+        y = true_loc + true_scale * jrd.normal(key, shape=(90, 100))
+
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        locs_var = lsl.Var(locs, name="locs")
+
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:-50, :], name="inducing_locs"),
+            sample_locs=locs_var,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="amplitude"),
+            length_scale=lsl.param(1.0, name="length_scale"),
+            name="coef",
+        )
+
+        loc = ModelVar(0.0, name="loc")
+        scale = ModelVar(1.0, bijector=tfb.Softplus(), name="scale")
+
+        model = TransformationModel(
+            y[:-50, :],
+            knots=knots.knots,
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            parametric_distribution=tfd.Normal,
+        )
+
+        with jax.disable_jit(disable=False):
+            result = model.fit_parametric_distributionloc_batched(
+                train=y,
+                validation=y,
+                locs=locs_var,
+                stopper=Stopper(max_iter=1000, patience=20),
+            )
+
+        model.graph.state = result.model_state
+        model.graph.update()
+
+        assert model.graph.vars["loc"].value == pytest.approx(true_loc, abs=0.1)
+        assert model.graph.vars["scale"].value == pytest.approx(true_scale, abs=0.1)
+    
+    def test_fit_loc_scale_spatial(self) -> None:
+        true_loc = 3.0
+        true_scale = 1.3
+        y = true_loc + true_scale * jrd.normal(key, shape=(90, 100))
+
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        locs_var = lsl.Var(locs, name="locs")
+
+        iloc = lsl.Var(locs[:-50,:], name="inducing_locs")
+
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=iloc,
+            sample_locs=locs_var,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="amplitude"),
+            length_scale=lsl.param(1.0, name="length_scale"),
+            name="coef",
+        )
+
+
+        loc = ParamPredictivePointProcessGP(
+            inducing_locs=iloc,
+            sample_locs=locs_var,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="amplitude_loc"),
+            length_scale=lsl.param(1.0, name="length_scale_loc"),
+            name="loc",
+        )
+
+        scale = ModelVar(1.0, bijector=tfb.Softplus(), name="scale")
+
+        model = TransformationModel(
+            y[:-50, :], knots=knots.knots, coef=coef, loc=loc, scale=scale, parametric_distribution=tfd.Normal
+        )
+
+        stopper = Stopper(max_iter=1000, patience=20)
+
+        with jax.disable_jit():
+            result = model.fit_parametric_distributionloc_batched(
+                train=y,
+                validation=y,
+                locs=locs_var,
+                stopper=stopper
+            )
+
+
+class TestLocScaleTransformationModel:
+
+    def test_init(self) -> None:
+        y = jrd.normal(key, shape=(90, 100))
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        locs_var = lsl.Var(locs, name="locs")
+
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:10, :], name="inducing_locs"),
+            sample_locs=locs_var,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="amplitude"),
+            length_scale=lsl.param(1.0, name="length_scale"),
+            name="coef",
+        )
+
+        coef_const = ModelConst(coef.value, name="coef")
+
+        loc = ModelVar(0.0, name="loc")
+        scale = ModelVar(1.0, bijector=tfb.Softplus(), name="scale")
+
+        model = LocScaleTransformationModel(
+            y[:-10, :], knots=knots.knots, coef=coef_const, loc=loc, scale=scale
+        )
+
+        assert model is not None
+
+    def test_fit_loc_scale(self) -> None:
+        true_loc = 3.0
+        true_scale = 1.3
+        y = true_loc + true_scale * jrd.normal(key, shape=(90, 100))
+
+        locs = jrd.uniform(key, shape=(y.shape[1], 2))
+        knots = OnionKnots(-3.0, 3.0, nparam=12)
+        locs_var = lsl.Var(locs, name="locs")
+
+        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
+            knots,
+            inducing_locs=lsl.Var(locs[:-50, :], name="inducing_locs"),
+            sample_locs=locs_var,
+            kernel_cls=tfk.ExponentiatedQuadratic,
+            amplitude=lsl.param(1.0, name="amplitude"),
+            length_scale=lsl.param(1.0, name="length_scale"),
+            name="coef",
+        )
+
+        loc = ModelVar(0.0, name="loc")
+        scale = ModelVar(1.0, bijector=tfb.Softplus(), name="scale")
+
+        model = LocScaleTransformationModel(
+            y[:-50, :], knots=knots.knots, coef=coef, loc=loc, scale=scale
+        )
+
+        with jax.disable_jit(disable=False):
+            result = model.fit_parametric_distributionloc_batched(
+                train=y,
+                validation=y,
+                locs=locs_var,
+                stopper=Stopper(max_iter=1000, patience=20),
+            )
+
+        model.graph.state = result.model_state
+        model.graph.update()
+
+        assert model.graph.vars["loc"].value == pytest.approx(true_loc, abs=0.1)
+        assert model.graph.vars["scale"].value == pytest.approx(true_scale, abs=0.1)
