@@ -311,24 +311,28 @@ def optim_loc_batched(
     # Set unused values in history to nan
 
     val["history"]["loss_train"] = (
-        val["history"]["loss_train"].at[(max_iter+1):].set(jnp.nan)
+        val["history"]["loss_train"].at[(max_iter + 1) :].set(jnp.nan)
     )
     val["history"]["loss_validation"] = (
-        val["history"]["loss_validation"].at[(max_iter+1):].set(jnp.nan)
+        val["history"]["loss_validation"].at[(max_iter + 1) :].set(jnp.nan)
     )
     if save_position_history:
         for name, value in val["history"]["position"].items():
-            val["history"]["position"][name] = value.at[(max_iter+1):, ...].set(jnp.nan)
+            val["history"]["position"][name] = value.at[(max_iter + 1) :, ...].set(
+                jnp.nan
+            )
 
     # ---------------------------------------------------------------------------------
     # Remove unused values in history, if applicable
 
     if prune_history:
-        val["history"]["loss_train"] = val["history"]["loss_train"][:(max_iter+1)]
-        val["history"]["loss_validation"] = val["history"]["loss_validation"][:(max_iter+1)]
+        val["history"]["loss_train"] = val["history"]["loss_train"][: (max_iter + 1)]
+        val["history"]["loss_validation"] = val["history"]["loss_validation"][
+            : (max_iter + 1)
+        ]
         if save_position_history:
             for name, value in val["history"]["position"].items():
-                val["history"]["position"][name] = value[:(max_iter+1), ...]
+                val["history"]["position"][name] = value[: (max_iter + 1), ...]
 
     # ---------------------------------------------------------------------------------
     # Initialize results object and return

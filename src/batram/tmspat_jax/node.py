@@ -53,6 +53,7 @@ class ModelConst(lsl.Var):
     """
     A variable that holds a constant value. This value is not fitted.
     """
+
     def __init__(
         self,
         value: Any,
@@ -64,7 +65,7 @@ class ModelConst(lsl.Var):
 
     def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
         return ModelConst(self.value, name=self.name)  # type: ignore
-    
+
     def set_locs(self, sample_locs: Array) -> ModelConst:
         return self
 
@@ -75,9 +76,10 @@ class ModelConst(lsl.Var):
 
 class ModelVar(TransformedVar):
     """
-    A variable is constant across locations. 
+    A variable is constant across locations.
     Can have a bijector. Does not have hyperparameters.
     """
+
     def __init__(
         self,
         value: Any,
@@ -93,7 +95,7 @@ class ModelVar(TransformedVar):
         val = self.value  # type: ignore
         bij = self.bijector
         return ModelVar(val, bijector=bij, name=self.name)
-    
+
     def set_locs(self, sample_locs: Array) -> ModelConst:
         return self
 
@@ -152,12 +154,12 @@ class ParamPredictivePointProcessGP(lsl.Var):
             Kuu = Kuu + salt
             L = jnp.linalg.cholesky(Kuu)
             Li = jnp.linalg.inv(L)
-            
+
             value = bijector.forward(Kdu @ Li.T @ latent_var)
-            
+
             if expand_dims:
                 value = jnp.expand_dims(value, -1)
-            
+
             return value + mean
 
         super().__init__(
@@ -200,7 +202,7 @@ class ParamPredictivePointProcessGP(lsl.Var):
         var.latent_var.value = self.latent_var.value
 
         return var
-    
+
     def set_locs(self, sample_locs: Array) -> ModelConst:
         self.sample_locs.value = sample_locs
         return self.update()
