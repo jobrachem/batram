@@ -155,12 +155,12 @@ class ParamPredictivePointProcessGP(lsl.Var):
             L = jnp.linalg.cholesky(Kuu)
             Li = jnp.linalg.inv(L)
 
-            value = bijector.forward(Kdu @ Li.T @ latent_var)
+            value = Kdu @ Li.T @ latent_var
 
             if expand_dims:
                 value = jnp.expand_dims(value, -1)
 
-            return value + mean
+            return bijector.forward(value + mean)
 
         super().__init__(
             lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du, self.mean),
