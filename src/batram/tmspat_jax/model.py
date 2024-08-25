@@ -262,7 +262,8 @@ class TransformationModel(Model):
         )
         coef = graph.vars[self.coef.name]
         parametric_distributionargs = {
-            name: graph.vars[var_.name] for name, var_ in self.parametric_distribution_kwargs.items()
+            name: graph.vars[var_.name]
+            for name, var_ in self.parametric_distribution_kwargs.items()
         }
 
         def one_batch(y, locs):
@@ -348,7 +349,8 @@ class TransformationModel(Model):
         )
         coef = graph.vars[self.coef.name]
         parametric_distributionargs = {
-            name: graph.vars[var_.name] for name, var_ in self.parametric_distribution_kwargs.items()
+            name: graph.vars[var_.name]
+            for name, var_ in self.parametric_distribution_kwargs.items()
         }
 
         def one_batch(z, locs):
@@ -446,9 +448,11 @@ class LocScaleTransformationModel(TransformationModel):
             .build_model()
         )
 
-class GEVTransformationModel(TransformationModel):
 
-    def copy_for(self, y: Any, sample_locs: lsl.Var | lsl.Node | None = None) -> TransformationModel:
+class GEVTransformationModel(TransformationModel):
+    def copy_for(
+        self, y: Any, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> TransformationModel:
         coef = self.coef.copy_for(sample_locs)
 
         location = self.parametric_distribution_kwargs["loc"]
@@ -462,8 +466,7 @@ class GEVTransformationModel(TransformationModel):
             to_float32=self._to_float32,
             loc=location,
             scale=scale,
-            concentration=concentration
+            concentration=concentration,
         )
 
         return model
-        

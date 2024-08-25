@@ -118,10 +118,9 @@ class GEVLocation(lsl.Var):
         scale: ModelVar | ModelConst,
         concentration: ModelVar | ModelConst,
         data: Array,
-        eps: float = 0.5,
+        eps: float | Array = 0.5,
         name: str = "",
     ) -> None:
-
         self.min_data = jnp.min(data)
         self.max_data = jnp.max(data)
         self.eps = jnp.array(eps, dtype=jnp.float64)
@@ -141,7 +140,6 @@ class GEVLocation(lsl.Var):
             return value
 
         def _clip(value, scale, concentration):
-
             value = jax.lax.cond(
                 jnp.allclose(concentration, 0.0),
                 lambda value, scale, concentration: value,
@@ -169,7 +167,7 @@ class GEVLocation(lsl.Var):
         scale = self.scale_var.copy_for(sample_locs=sample_locs)
         concentration = self.concentration_var.copy_for(sample_locs=sample_locs)
         location = GEVLocation(
-            value=self.value,
+            value=self.value,  # type: ignore
             scale=scale,
             concentration=concentration,
             data=jnp.array([self.min_data, self.max_data]),
@@ -302,7 +300,7 @@ class ParamPredictivePointProcessGP(lsl.Var):
         return self
 
 
-class GEVParamPredictivePointProcessGP(ParamPredictivePointProcessGP):
+class GEVLocationPredictivePointProcessGP(lsl.Var):
     def __init__(
         self,
         scale: ParamPredictivePointProcessGP,
@@ -314,10 +312,12 @@ class GEVParamPredictivePointProcessGP(ParamPredictivePointProcessGP):
         bijector: tfb.Bijector = tfb.Identity(),
         name: str = "",
         expand_dims: bool = True,
+        eps: float | Array = 0.5,
         **kernel_params: lsl.Var | TransformedVar,
     ) -> None:
-        self.min_data = jnp.min(data)
-        self.max_data = jnp.max(data)
+        self.min_data = jnp.min(data, keepdims=True)
+        self.max_data = jnp.max(data, keepdims=True)
+        self.eps = jnp.array(eps, dtype=jnp.float64)
 
         kernel_uu = Kernel(
             x1=inducing_locs,
@@ -358,15 +358,42 @@ class GEVParamPredictivePointProcessGP(ParamPredictivePointProcessGP):
             if expand_dims:
                 value = jnp.expand_dims(value, -1)
 
-            value = bijector.forward(value + mean)
+            return bijector.forward(value + mean)
 
-            return value
-
-        super(lsl.Var, self).__init__(
-            lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du, self.mean),
-            name=name,
+        self.transformed = lsl.Calc(
+            _compute_param, self.latent_var, kernel_uu, kernel_du, self.mean
         )
 
+        def _clip_select(value, scale, concentration):
+            value = jnp.select(
+                condlist=[
+                    concentration < 0.0,
+                    concentration > 0.0,
+                    jnp.ones_like(concentration),
+                ],
+                choicelist=[
+                    jnp.clip(
+                        value, min=self.max_data + scale / concentration + self.eps
+                    ),
+                    jnp.clip(
+                        value, max=self.min_data + scale / concentration - self.eps
+                    ),
+                    value,
+                ],
+            )
+            return value
+
+        calc = lsl.Calc(
+            _clip_select,
+            value=self.transformed,
+            scale=scale,
+            concentration=concentration,
+        )
+
+        super().__init__(calc, name=name)
+
+        self.scale_var = scale
+        self.concentration_var = concentration
         self.bijector = bijector
         self.kernel_params = kernel_params
         self.kernel_cls = kernel_cls
@@ -374,6 +401,61 @@ class GEVParamPredictivePointProcessGP(ParamPredictivePointProcessGP):
         self.sample_locs = sample_locs
         self.K = n_inducing_locs
         self.parameter_names = [self.latent_var.name, self.mean.name]
+
+    @property
+    def hyperparameter_names(self):
+        return [find_param(param).name for param in self.kernel_params.values()]
+
+    def copy_for(
+        self, sample_locs: lsl.Var | lsl.Node | None = None
+    ) -> tuple[
+        GEVLocationPredictivePointProcessGP,
+        ParamPredictivePointProcessGP,
+        ParamPredictivePointProcessGP,
+    ]:
+        kernel_params = {
+            name: copy.deepcopy(param) for name, param in self.kernel_params.items()
+        }
+
+        sample_locs = (
+            sample_locs if sample_locs is not None else copy.deepcopy(self.sample_locs)
+        )
+
+        scale = self.scale_var.copy_for(sample_locs=sample_locs)
+        concentration = self.concentration_var.copy_for(sample_locs=sample_locs)
+
+        var = GEVLocationPredictivePointProcessGP(
+            scale=scale,
+            concentration=concentration,
+            inducing_locs=copy.deepcopy(self.inducing_locs),
+            sample_locs=sample_locs,
+            kernel_cls=self.kernel_cls,
+            bijector=self.bijector,
+            data=jnp.r_[self.min_data, self.max_data],
+            name=self.name,
+            eps=self.eps,
+            **kernel_params,
+        )
+
+        var.latent_var.value = self.latent_var.value
+
+        return var, scale, concentration
+
+    def set_locs(self, sample_locs: Array) -> ModelConst:
+        self.sample_locs.value = sample_locs
+        return self.update()
+
+    def update_from(
+        self, param: GEVLocationPredictivePointProcessGP
+    ) -> GEVLocationPredictivePointProcessGP:
+        for name, kernel_param in param.kernel_params.items():
+            self.kernel_params[name].value = kernel_param.value
+            self.kernel_params[name].update()
+
+        self.latent_var.value = param.latent_var.value
+        self.update()
+
+        return self
 
 
 def brownian_motion_mat(nrows: int, ncols: int):

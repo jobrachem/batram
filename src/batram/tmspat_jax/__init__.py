@@ -1,14 +1,20 @@
 from liesel_ptm import TransformedVar
 
-from .model import Model, TransformationModel, LocScaleTransformationModel, GEVTransformationModel
+from .model import (
+    GEVTransformationModel,
+    LocScaleTransformationModel,
+    Model,
+    TransformationModel,
+)
 from .node import (
+    GEVLocation,
+    GEVLocationPredictivePointProcessGP,
+    ModelConst,
     ModelOnionCoef,
     ModelVar,
-    ModelConst,
     OnionCoefPredictivePointProcessGP,
     OnionKnots,
     ParamPredictivePointProcessGP,
-    GEVLocation,
 )
 
 __all__ = [
@@ -23,5 +29,6 @@ __all__ = [
     "ModelVar",
     "ModelConst",
     "GEVLocation",
-    "GEVTransformationModel"
+    "GEVTransformationModel",
+    "GEVLocationPredictivePointProcessGP"
 ]

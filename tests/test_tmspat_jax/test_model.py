@@ -374,28 +374,3 @@ class TestLocScaleTransformationModel:
 
         assert model.graph.vars["loc"].value == pytest.approx(true_loc, abs=0.1)
         assert model.graph.vars["scale"].value == pytest.approx(true_scale, abs=0.1)
-
-
-class TestGEVTransformationModel:
-    def test_copy_for_gev_location(self) -> None:
-        y = jrd.normal(key, shape=(20, 50))
-        locs = jrd.uniform(key, shape=(y.shape[1], 2))
-
-        knots = OnionKnots(-3.0, 3.0, nparam=12)
-        coef = OnionCoefPredictivePointProcessGP.new_from_locs(
-            knots,
-            inducing_locs=lsl.Var(locs[:5, :]),
-            sample_locs=lsl.Var(locs[:10, :]),
-            kernel_cls=tfk.ExponentiatedQuadratic,
-            amplitude=lsl.param(1.0),
-            length_scale=lsl.param(1.0),
-        )
-
-        coef.latent_coef.latent_var.value = jrd.normal(
-            key, shape=coef.latent_coef.latent_var.value.shape
-        )
-
-        
-
-        model = TransformationModel(y[:, :10], knots=knots.knots, coef=coef)
-        model_new = model.copy_for(y, sample_locs=lsl.Var(locs))
