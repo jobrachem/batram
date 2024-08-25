@@ -262,7 +262,7 @@ class TransformationModel(Model):
         )
         coef = graph.vars[self.coef.name]
         parametric_distributionargs = {
-            name: graph.vars[name] for name in self.parametric_distribution_kwargs
+            name: graph.vars[var_.name] for name, var_ in self.parametric_distribution_kwargs.items()
         }
 
         def one_batch(y, locs):
@@ -302,8 +302,8 @@ class TransformationModel(Model):
             y=y_last_batch, sample_locs=lsl.Var(locs_last_batch, name="locs")
         )
         parametric_distributionargs_last_batch = {
-            name: model_last_batch.graph.vars[name].value
-            for name in self.parametric_distribution_kwargs
+            name: model_last_batch.graph.vars[var_.name].value
+            for name, var_ in self.parametric_distribution_kwargs.items()
         }
 
         dist = self.dist_class(
@@ -348,7 +348,7 @@ class TransformationModel(Model):
         )
         coef = graph.vars[self.coef.name]
         parametric_distributionargs = {
-            name: graph.vars[name] for name in self.parametric_distribution_kwargs
+            name: graph.vars[var_.name] for name, var_ in self.parametric_distribution_kwargs.items()
         }
 
         def one_batch(z, locs):
@@ -387,8 +387,8 @@ class TransformationModel(Model):
             y=z_last_batch, sample_locs=lsl.Var(locs_last_batch, name="locs")
         )
         parametric_distributionargs_last_batch = {
-            name: model_last_batch.graph.vars[name].value
-            for name in self.parametric_distribution_kwargs
+            name: model_last_batch.graph.vars[var_.name].value
+            for name, var_ in self.parametric_distribution_kwargs.items()
         }
 
         dist = self.dist_class(
@@ -445,3 +445,25 @@ class LocScaleTransformationModel(TransformationModel):
             .add(self.response)
             .build_model()
         )
+
+class GEVTransformationModel(TransformationModel):
+
+    def copy_for(self, y: Any, sample_locs: lsl.Var | lsl.Node | None = None) -> TransformationModel:
+        coef = self.coef.copy_for(sample_locs)
+
+        location = self.parametric_distribution_kwargs["loc"]
+        location, scale, concentration = location.copy_for(sample_locs=sample_locs)
+
+        model = TransformationModel(
+            y=y,
+            knots=self.knots,
+            coef=coef,
+            parametric_distribution=self.parametric_distribution,
+            to_float32=self._to_float32,
+            loc=location,
+            scale=scale,
+            concentration=concentration
+        )
+
+        return model
+        

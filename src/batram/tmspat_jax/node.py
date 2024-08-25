@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import tensorflow_probability.substrates.jax.bijectors as tfb
@@ -69,7 +70,7 @@ class ModelConst(lsl.Var):
     def set_locs(self, sample_locs: Array) -> ModelConst:
         return self
 
-    def update_from(self, param: ModelConst) -> ModelVar:
+    def update_from(self, param: ModelConst) -> ModelConst:
         self.value = param.value  # type:ignore
         return self
 
@@ -91,15 +92,96 @@ class ModelVar(TransformedVar):
         self.parameter_names = [find_param(self).name]
         self.hyperparameter_names: list[str] = []
 
-    def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelConst:
+    def copy_for(self, sample_locs: lsl.Var | lsl.Node) -> ModelVar:
         val = self.value  # type: ignore
         bij = self.bijector
         return ModelVar(val, bijector=bij, name=self.name)
 
-    def set_locs(self, sample_locs: Array) -> ModelConst:
+    def set_locs(self, sample_locs: Array) -> ModelVar:
         return self
 
     def update_from(self, param: ModelVar) -> ModelVar:
+        if self.strong:
+            self.value = param.value  # type: ignore
+            return self
+        if self.transformed:
+            self.transformed.value = param.transformed.value
+            return self.update()
+
+        raise RuntimeError("Cannot update; variable is neither strong nor transformed.")
+
+
+class GEVLocation(lsl.Var):
+    def __init__(
+        self,
+        value: Any,
+        scale: ModelVar | ModelConst,
+        concentration: ModelVar | ModelConst,
+        data: Array,
+        eps: float = 0.5,
+        name: str = "",
+    ) -> None:
+
+        self.min_data = jnp.min(data)
+        self.max_data = jnp.max(data)
+        self.eps = jnp.array(eps, dtype=jnp.float64)
+
+        def _clip_select(value, scale, concentration):
+            value = jnp.select(
+                condlist=[concentration < 0.0, concentration > 0.0],
+                choicelist=[
+                    jnp.clip(
+                        value, min=self.max_data + scale / concentration + self.eps
+                    ),
+                    jnp.clip(
+                        value, max=self.min_data + scale / concentration - self.eps
+                    ),
+                ],
+            )
+            return value
+
+        def _clip(value, scale, concentration):
+
+            value = jax.lax.cond(
+                jnp.allclose(concentration, 0.0),
+                lambda value, scale, concentration: value,
+                _clip_select,
+                value,
+                scale,
+                concentration,
+            )
+
+            return value
+
+        self.transformed = lsl.param(value, name=f"{name}_unclipped")
+        calc = lsl.Calc(
+            _clip, value=self.transformed, scale=scale, concentration=concentration
+        )
+        super().__init__(calc, name=name)
+        self.parameter_names = [self.transformed.name]
+        self.hyperparameter_names: list[str] = []
+        self.scale_var = scale
+        self.concentration_var = concentration
+
+    def copy_for(
+        self, sample_locs: lsl.Var | lsl.Node
+    ) -> tuple[GEVLocation, ModelVar | ModelConst, ModelVar | ModelConst]:
+        scale = self.scale_var.copy_for(sample_locs=sample_locs)
+        concentration = self.concentration_var.copy_for(sample_locs=sample_locs)
+        location = GEVLocation(
+            value=self.value,
+            scale=scale,
+            concentration=concentration,
+            data=jnp.array([self.min_data, self.max_data]),
+            eps=self.eps,
+            name=self.name,
+        )
+        return location, scale, concentration
+
+    def set_locs(self, sample_locs: Array) -> ModelConst:
+        return self
+
+    def update_from(self, param: GEVLocation) -> ModelVar:
         if self.strong:
             self.value = param.value  # type: ignore
             return self
@@ -218,6 +300,80 @@ class ParamPredictivePointProcessGP(lsl.Var):
         self.update()
 
         return self
+
+
+class GEVParamPredictivePointProcessGP(ParamPredictivePointProcessGP):
+    def __init__(
+        self,
+        scale: ParamPredictivePointProcessGP,
+        concentration: ParamPredictivePointProcessGP,
+        data: Array,
+        inducing_locs: lsl.Var | lsl.Node,
+        sample_locs: lsl.Var | lsl.Node,
+        kernel_cls: type[tfk.AutoCompositeTensorPsdKernel],
+        bijector: tfb.Bijector = tfb.Identity(),
+        name: str = "",
+        expand_dims: bool = True,
+        **kernel_params: lsl.Var | TransformedVar,
+    ) -> None:
+        self.min_data = jnp.min(data)
+        self.max_data = jnp.max(data)
+
+        kernel_uu = Kernel(
+            x1=inducing_locs,
+            x2=inducing_locs,
+            kernel_cls=kernel_cls,
+            **kernel_params,
+            name=f"{name}_kernel",
+        ).update()
+
+        kernel_du = Kernel(
+            x1=sample_locs,
+            x2=inducing_locs,
+            kernel_cls=kernel_cls,
+            **kernel_params,
+            name=f"{name}_kernel_latent_u",
+        ).update()
+
+        n_inducing_locs = kernel_uu.value.shape[0]
+
+        self.latent_var = lsl.param(
+            jnp.zeros((n_inducing_locs,)),
+            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            name=f"{name}_latent",
+        )
+
+        # a small value added to the diagonal of Kuu for numerical stability
+        salt = jnp.diag(jnp.full(shape=(n_inducing_locs,), fill_value=1e-6))
+
+        self.mean = lsl.param(0.0, name=f"{name}_mean")
+
+        def _compute_param(latent_var, Kuu, Kdu, mean):
+            Kuu = Kuu + salt
+            L = jnp.linalg.cholesky(Kuu)
+            Li = jnp.linalg.inv(L)
+
+            value = Kdu @ Li.T @ latent_var
+
+            if expand_dims:
+                value = jnp.expand_dims(value, -1)
+
+            value = bijector.forward(value + mean)
+
+            return value
+
+        super(lsl.Var, self).__init__(
+            lsl.Calc(_compute_param, self.latent_var, kernel_uu, kernel_du, self.mean),
+            name=name,
+        )
+
+        self.bijector = bijector
+        self.kernel_params = kernel_params
+        self.kernel_cls = kernel_cls
+        self.inducing_locs = inducing_locs
+        self.sample_locs = sample_locs
+        self.K = n_inducing_locs
+        self.parameter_names = [self.latent_var.name, self.mean.name]
 
 
 def brownian_motion_mat(nrows: int, ncols: int):
