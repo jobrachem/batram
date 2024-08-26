@@ -232,8 +232,32 @@ class TransformationModel(Model):
 
         return result
 
+    def transformation_and_logdet_parametric(
+        self, y: Array, locs: Array | None = None
+    ) -> tuple[Array, Array]:
+        return self._transformation_and_logdet(
+            y, locs, which="transformation_and_logdet_parametric"
+        )
+
+    def transformation_and_logdet_spline(
+        self, y: Array, locs: Array | None = None
+    ) -> tuple[Array, Array]:
+        return self._transformation_and_logdet(
+            y, locs, which="transformation_and_logdet_spline"
+        )
+
     def transformation_and_logdet(
         self, y: Array, locs: Array | None = None
+    ) -> tuple[Array, Array]:
+        return self._transformation_and_logdet(
+            y, locs, which="transformation_and_logdet"
+        )
+
+    def _transformation_and_logdet(
+        self,
+        y: Array,
+        locs: Array | None = None,
+        which: str = "transformation_and_logdet",
     ) -> tuple[Array, Array]:
         y = jnp.asarray(y)
         if locs is None:
@@ -275,12 +299,14 @@ class TransformationModel(Model):
                 parametric_distribution_values[name] = var_.value
 
             dist = self.dist_class(coef=coef.value, **parametric_distribution_values)
-            z, logdet = dist.transformation_and_logdet(y.T)
+            transformation_and_logdet_fn = getattr(dist, which)
+            z, logdet = transformation_and_logdet_fn(y.T)
             return z.T, logdet.T
 
         z = jnp.empty_like(y)
         z_logdet = jnp.empty_like(y)
         init_val = (y, locs, batch_indices, z, z_logdet)
+        one_batch(y[:, batch_indices[0]], locs[batch_indices[0], ...])
 
         def body_fun(i, val):
             y, locs, batch_indices, z, z_logdet = val
@@ -310,15 +336,34 @@ class TransformationModel(Model):
         dist = self.dist_class(
             coef=model_last_batch.coef.value, **parametric_distributionargs_last_batch
         )
-
-        z_i, z_logdet_i = dist.transformation_and_logdet(y_last_batch.T)
+        transformation_and_logdet_fn = getattr(dist, which)
+        z_i, z_logdet_i = transformation_and_logdet_fn(y_last_batch.T)
 
         z = z.at[:, last_batch_indices].set(z_i.T)
         z_logdet = z_logdet.at[:, last_batch_indices].set(z_logdet_i.T)
 
         return z, z_logdet
 
+    def transformation_inverse_parametric(
+        self, z: Array, locs: Array | None = None
+    ) -> Array:
+        return self._transformation_inverse(
+            z, locs, which="inverse_transformation_parametric"
+        )
+
+    def transformation_inverse_spline(
+        self, z: Array, locs: Array | None = None
+    ) -> Array:
+        return self._transformation_inverse(
+            z, locs, which="inverse_transformation_spline"
+        )
+
     def transformation_inverse(self, z: Array, locs: Array | None = None) -> Array:
+        return self._transformation_inverse(z, locs, which="inverse_transformation")
+
+    def _transformation_inverse(
+        self, z: Array, locs: Array | None = None, which: str = "inverse_transformation"
+    ) -> Array:
         """
         Warning: Does not take intercept or slope into account!
         """
@@ -365,7 +410,9 @@ class TransformationModel(Model):
                 coef=coef.update().value, **parametric_distribution_values
             )
 
-            y = dist.inverse_transformation(z.T)
+            inverse_transformation_fn = getattr(dist, which)
+
+            y = inverse_transformation_fn(z.T)
 
             return y.T
 
@@ -396,8 +443,8 @@ class TransformationModel(Model):
         dist = self.dist_class(
             coef=model_last_batch.coef.value, **parametric_distributionargs_last_batch
         )
-
-        y_i = dist.inverse_transformation(z_last_batch.T)
+        inverse_transformation_fn = getattr(dist, which)
+        y_i = inverse_transformation_fn(z_last_batch.T)
         y = y.at[:, last_batch_indices].set(y_i.T)
 
         return y

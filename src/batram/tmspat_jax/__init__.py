@@ -30,5 +30,5 @@ __all__ = [
     "ModelConst",
     "GEVLocation",
     "GEVTransformationModel",
-    "GEVLocationPredictivePointProcessGP"
+    "GEVLocationPredictivePointProcessGP",
 ]
