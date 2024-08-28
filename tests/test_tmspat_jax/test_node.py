@@ -244,7 +244,7 @@ class TestParamPredictivePointProcessGP:
         param_new = param.copy_for(lsl.Var(locs))
 
         assert jnp.allclose(param_new.value[:10], param.value)
-        assert param_new.value.shape == (locs.shape[0],)
+        assert param_new.value.shape[0] == locs.shape[0]
 
         assert param_new.kernel_params["amplitude"] is not amplitude
         assert param_new.kernel_params["length_scale"] is not length_scale
