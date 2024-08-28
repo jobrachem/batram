@@ -119,6 +119,7 @@ class GEVLocation(lsl.Var):
         concentration: ModelVar | ModelConst,
         data: Array,
         eps: float | Array = 0.5,
+        clip: bool = True,
         name: str = "",
     ) -> None:
         self.min_data = jnp.min(data)
@@ -140,6 +141,8 @@ class GEVLocation(lsl.Var):
             return value
 
         def _clip(value, scale, concentration):
+            if not clip:
+                return value
             value = jax.lax.cond(
                 jnp.allclose(concentration, 0.0),
                 lambda value, scale, concentration: value,
