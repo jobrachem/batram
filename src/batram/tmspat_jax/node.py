@@ -316,6 +316,7 @@ class GEVLocationPredictivePointProcessGP(lsl.Var):
         name: str = "",
         expand_dims: bool = True,
         eps: float | Array = 0.5,
+        clip: bool = True,
         **kernel_params: lsl.Var | TransformedVar,
     ) -> None:
         self.min_data = jnp.min(data, keepdims=True)
@@ -368,6 +369,8 @@ class GEVLocationPredictivePointProcessGP(lsl.Var):
         )
 
         def _clip_select(value, scale, concentration):
+            if not clip:
+                return value
             value = jnp.select(
                 condlist=[
                     concentration < 0.0,
