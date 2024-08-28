@@ -986,12 +986,6 @@ class SimpleTM(torch.nn.Module):
             # numerically stable approximation
             z[..., i] = t_score_to_z_score_hill(z_tilde, df=2 * alpha_post[i])
 
-            if np.any(np.isinf(z[:, i])):
-                n_inf = sum(np.isinf(z[:, i]))
-
-                warnings.warn(f"Inf encountered during map evaluation! N inf = {n_inf}")
-                z[:, i] = stats.norm.ppf(1 - 1e-16)
-
             z_logdet[:, i] = (
                 -0.5 * initVar.log()
                 + stats.t.logpdf(z_tilde, df=2 * alpha_post[i])
