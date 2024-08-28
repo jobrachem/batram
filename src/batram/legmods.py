@@ -651,75 +651,7 @@ class SimpleTM(torch.nn.Module):
         x_fix=torch.tensor([]),
         last_ind=None,
         num_samples: int = 1,
-    ):
-        """
-        I'm not sure where this should exactly be implemented.
-
-        I guess, best ist in the likelihood nn.Module but it needs access to the
-        kernel module as well.
-
-        In any case, this class should expose an interface.
-        """
-
-        augmented_data: AugmentedData = self.augment_data(self.data, None)
-
-        data = self.data.response
-        NN = self.data.conditioning_sets
-        scales = augmented_data.scales
-        sigmas = self.kernel._sigmas(scales)
-        self.intloglik.nug_mult
-
-        nug_mean = self.nugget(augmented_data)
-        kernel_result = self.kernel.forward(augmented_data, nug_mean)
-        nugget_mean = kernel_result.nug_mean
-        chol = kernel_result.GChol
-        tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
-        y_tilde = tmp_res.y_tilde
-        beta_post = tmp_res.beta_post
-        alpha_post = tmp_res.alpha_post
-        n, N = data.shape
-        m = NN.shape[1]
-        if last_ind is None:
-            last_ind = N
-        # loop over variables/locations
-        x_new = torch.empty((num_samples, N))
-        x_new[:, : x_fix.size(0)] = x_fix.repeat(num_samples, 1)
-        x_new[:, x_fix.size(0) :] = 0.0
-        for i in range(x_fix.size(0), last_ind):
-            # predictive distribution for current sample
-            if i == 0:
-                cStar = torch.zeros((num_samples, n))
-                prVar = torch.zeros((num_samples,))
-            else:
-                ncol = min(i, m)
-                X = data[:, NN[i, :ncol]]
-                XPred = x_new[:, NN[i, :ncol]].unsqueeze(1)
-                cStar = self.kernel._kernel_fun(
-                    XPred, sigmas[i], nugget_mean[i], X
-                ).squeeze(1)
-                prVar = self.kernel._kernel_fun(
-                    XPred, sigmas[i], nugget_mean[i]
-                ).squeeze((1, 2))
-            cChol = torch.linalg.solve_triangular(
-                chol[i, :, :], cStar.unsqueeze(-1), upper=False
-            ).squeeze(-1)
-            meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
-            varPredNoNug = prVar - cChol.square().sum(1)
-
-            # sample
-            invGDist = InverseGamma(concentration=alpha_post[i], rate=beta_post[i])
-            nugget = invGDist.sample((num_samples,))
-            uniNDist = Normal(loc=meanPred, scale=nugget.mul(1.0 + varPredNoNug).sqrt())
-            x_new[:, i] = uniNDist.sample()
-
-        return x_new
-
-    def sample_from_z(
-        self,
-        z,
         seed: int | None = None,
-        fixed=torch.tensor([]),
-        last_ind: int | None = None,
     ):
         """
         I'm not sure where this should exactly be implemented.
@@ -729,83 +661,29 @@ class SimpleTM(torch.nn.Module):
 
         In any case, this class should expose an interface.
         """
-        if last_ind is not None and last_ind < fixed.size(-1):
-            raise ValueError("last_ind must be larger than conditioned field 'fixed'.")
-
-        if not len(fixed.size()) == 1:
-            raise ValueError("'fixed' must be a 1d tensor.")
-
+        data = self.data.response
+        N = data.shape[1]
         if seed is not None:
             torch.manual_seed(seed)
+        z = Normal(loc=0.0, scale=1.0).sample((num_samples, N))
 
-        num_samples = z.shape[0]
+        return self.inverse_map(z, x_fix=x_fix, last_ind=last_ind, sample_nugget=True)
 
-        augmented_data: AugmentedData = self.augment_data(self.data, None)
-
-        data = self.data.response
-        NN = self.data.conditioning_sets
-        scales = augmented_data.scales
-        sigmas = self.kernel._sigmas(scales)
-        self.intloglik.nug_mult
-
-        nug_mean = self.nugget(augmented_data)
-        kernel_result = self.kernel.forward(augmented_data, nug_mean)
-        nugget_mean = kernel_result.nug_mean
-        chol = kernel_result.GChol
-        tmp_res = self.intloglik.precalc(kernel_result, augmented_data.response)
-        y_tilde = tmp_res.y_tilde
-        beta_post = tmp_res.beta_post
-        alpha_post = tmp_res.alpha_post
-        n, N = data.shape
-        if last_ind is None:
-            last_ind = N
-
-        m = NN.shape[1]
-        # loop over variables/locations
-        x_new = torch.empty((num_samples, N))
-        x_new[:, : fixed.shape[0]] = fixed
-
-        for i in range(fixed.size(0), last_ind):
-            # predictive distribution for current sample
-            if i == 0:
-                cStar = torch.zeros((num_samples, n))
-                prVar = torch.zeros((num_samples,))
-            else:
-                ncol = min(i, m)
-                X = data[:, NN[i, :ncol]]
-                XPred = x_new[:, NN[i, :ncol]].unsqueeze(1)
-                cStar = self.kernel._kernel_fun(
-                    XPred, sigmas[i], nugget_mean[i], X
-                ).squeeze(1)
-                prVar = self.kernel._kernel_fun(
-                    XPred, sigmas[i], nugget_mean[i]
-                ).squeeze((1, 2))
-
-            cChol = torch.linalg.solve_triangular(
-                chol[i, :, :], cStar.unsqueeze(-1), upper=False
-            ).squeeze(-1)
-            meanPred = y_tilde[i, :].unsqueeze(0).mul(cChol).sum(1)
-            varPredNoNug = prVar - cChol.square().sum(1)
-            if torch.any(varPredNoNug < 0.0):
-                warnings.warn("Negative v(y_1:i-1) clipped to zero.")
-                varPredNoNug = torch.clip(varPredNoNug, 0.0)
-
-            # sample
-            invGDist = InverseGamma(concentration=alpha_post[i], rate=beta_post[i])
-            nugget = invGDist.sample((num_samples,))
-            x_new[:, i] = z[:, i] * nugget.mul(1.0 + varPredNoNug).sqrt() + meanPred
-
-        return x_new
-
-    def inverse_map(self, z, fixed=torch.tensor([]), last_ind: int | None = None):
+    def inverse_map(
+        self,
+        z,
+        x_fix=torch.tensor([]),
+        last_ind: int | None = None,
+        sample_nugget: bool = False,
+    ):
         """
         Code mostly copy-and-pasted from cond_samp.
         """
 
-        if last_ind is not None and last_ind < fixed.size(-1):
+        if last_ind is not None and last_ind < x_fix.size(-1):
             raise ValueError("last_ind must be larger than conditioned field 'fixed'.")
 
-        if not len(fixed.size()) == 1:
+        if not len(x_fix.size()) == 1:
             raise ValueError("'fixed' must be a 1d tensor.")
 
         num_samples = z.shape[0] if len(z.shape) > 1 else 1
@@ -834,9 +712,9 @@ class SimpleTM(torch.nn.Module):
             last_ind = N
 
         x_new = torch.empty((num_samples, N))
-        x_new[:, : fixed.shape[0]] = fixed
+        x_new[:, : x_fix.shape[0]] = x_fix
 
-        for i in range(fixed.size(0), last_ind):
+        for i in range(x_fix.size(0), last_ind):
             # predictive distribution for current sample
             if i == 0:
                 cStar = torch.zeros((num_samples, n))
@@ -873,7 +751,15 @@ class SimpleTM(torch.nn.Module):
                     warnings.warn("Negative v(y_1:i-1) clipped to zero.")
                     varPredNoNug = torch.clip(varPredNoNug, 0.0)
 
-                initVar = beta_post[i] / alpha_post[i] * (1 + varPredNoNug)
+                if sample_nugget:
+                    invGDist = InverseGamma(
+                        concentration=alpha_post[i], rate=beta_post[i]
+                    )
+                    nugget = invGDist.sample((num_samples,))
+                else:
+                    nugget = beta_post[i] / alpha_post[i]
+
+                initVar = nugget.mul(1 + varPredNoNug)
 
                 pnorm = stats.norm.cdf(z[..., i])
                 zt = stats.t.ppf(pnorm, df=2 * alpha_post[i])
@@ -1031,7 +917,7 @@ class SimpleTM(torch.nn.Module):
             tracked_chain=tracked_chain,
         )
 
-    def compute_z_and_logdet(self, obs):
+    def map_and_logdet(self, obs):
         augmented_data: AugmentedData = self.augment_data(self.data, None)
 
         data = self.data.response
@@ -1093,12 +979,7 @@ class SimpleTM(torch.nn.Module):
 
             z_tilde = (obs[:, i] - meanPred) / initVar.sqrt()
 
-            # Using scipy here instead of pytorch, because pytorch does not
-            # implement StudentT.cdf.
-            # z_t = stats.t.cdf(z_tilde, df=2 * alpha_post[i])
-            # z[:, i] = stats.norm.ppf(z_t)
-
-            # numerically more stable approximation of the above
+            # numerically stable approximation
             z[..., i] = t_score_to_z_score_hill(z_tilde, df=2 * alpha_post[i])
 
             if np.any(np.isinf(z[:, i])):
@@ -1116,7 +997,7 @@ class SimpleTM(torch.nn.Module):
         return z, z_logdet
 
     def score(self, obs, dim=None):
-        z, z_logdet = self.compute_z_and_logdet(obs)
+        z, z_logdet = self.map_and_logdet(obs)
         return (stats.norm.logpdf(z) + z_logdet).sum(axis=dim)
 
 

@@ -97,12 +97,12 @@ def test_legmods_cond_samp_bayes(simple_data: Data) -> None:
     tm = SimpleTM(simple_data, theta_init, False, smooth=1.5, nug_mult=4.0)
 
     with torch.no_grad():
-        sample = tm.cond_sample()
+        sample = tm.cond_sample(seed=5)
         sample_abs_sum = sample.abs().sum()
 
     # we do not expect this to hold because of the RNG involved
     # however, it should be the same for the legacy method and the legmods
-    assert sample_abs_sum == pytest.approx(65.3635, abs=1e-2)
+    assert sample_abs_sum == pytest.approx(108.7152, abs=1e-2)
 
 
 def test_legmods_cond_samp_multi_samples(simple_data: Data) -> None:
@@ -133,7 +133,7 @@ def test_inverse_map(simple_data: Data) -> None:
 
     for _ in range(3):
         with torch.no_grad():
-            z, _ = tm.compute_z_and_logdet(simple_data.response)
+            z, _ = tm.map_and_logdet(simple_data.response)
             yt = tm.inverse_map(torch.as_tensor(z))
 
             score_z = tm.score(simple_data.response)
@@ -149,7 +149,7 @@ def test_sample_from_z_with_fixed(simple_data: Data) -> None:
     z = torch.tensor(np.random.normal(size=simple_data.response.shape))
 
     with torch.no_grad():
-        y = tm.sample_from_z(z, fixed=x_fix)
+        y = tm.inverse_map(z, x_fix=x_fix, sample_nugget=True)
 
     assert torch.allclose(y[0, : x_fix.shape[0]], x_fix)
 
