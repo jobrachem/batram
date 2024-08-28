@@ -675,6 +675,7 @@ class SimpleTM(torch.nn.Module):
         x_fix=torch.tensor([]),
         last_ind: int | None = None,
         sample_nugget: bool = False,
+        seed: int | None = None
     ):
         """
         Code mostly copy-and-pasted from cond_samp.
@@ -685,6 +686,9 @@ class SimpleTM(torch.nn.Module):
 
         if not len(x_fix.size()) == 1:
             raise ValueError("'fixed' must be a 1d tensor.")
+        
+        if seed is not None:
+            torch.manual_seed(seed)
 
         num_samples = z.shape[0] if len(z.shape) > 1 else 1
 
