@@ -583,9 +583,9 @@ class IntLogLik(torch.nn.Module):
             - tmp_res.alpha.lgamma()
         )  # (N,)
 
-        assert (
-            loglik.isfinite().all().item()
-        ), "Log-likelihood contains non finite values."
+        assert loglik.isfinite().all().item(), (
+            "Log-likelihood contains non finite values."
+        )
 
         return loglik
 
@@ -756,13 +756,13 @@ class SimpleTM(torch.nn.Module):
                         concentration=alpha_post[i], rate=beta_post[i]
                     )
                     nugget = invGDist.sample((num_samples,))
+                    zt = z[..., i].numpy()
                 else:
                     nugget = beta_post[i] / alpha_post[i]
+                    pnorm = stats.norm.cdf(z[..., i].numpy())
+                    zt = stats.t.ppf(pnorm, df=2 * alpha_post[i].numpy())
 
                 initVar = nugget.mul(1 + varPredNoNug)
-
-                pnorm = stats.norm.cdf(z[..., i].numpy())
-                zt = stats.t.ppf(pnorm, df=2 * alpha_post[i].numpy())
 
                 x_new[:, i] = meanPred + initVar.sqrt() * torch.from_numpy(zt)
 
